@@ -1,6 +1,8 @@
+from cProfile import label
 import torch
 import copy
-
+import numpy as np
+import matplotlib.pyplot as plt
 
 # PATH = 'backup/epoch_107_9011_drop9.pth'
 # # PATH = 'trained_snn_models/snn_vgg16_cifar10_5_202203261804/pruned_epoch_3.pth'
@@ -102,20 +104,36 @@ def tdbn_train(total_output, min_thr=0.1, max_thr=0.9):
 
     min_scale = []
     max_scale = []
-
-    for layer in total_output.keys():
+    hoyer_thr_per_batch = torch.load('output/my_hoyer_x_scale_factor')
+    final_avg = torch.load('output/my_hoyer_x_scale_factor_final_avg')
+    print('hoyer_thr_per_batch shape: {}'.format(hoyer_thr_per_batch.shape))
+    N,L = hoyer_thr_per_batch.shape
+    x_num = np.arange(N)
+    plt.figure(figsize=(32,32))
+    for l in range(L):
+        plt.subplot(4,4,l+1)
+        plt.plot(x_num, hoyer_thr_per_batch[:,l], label=f'layer {l}')
+        plt.hlines(final_avg[l], 0, N, colors='r')
+        plt.legend()
+    plt.savefig('output/my_hoyer_x_scale_factor.jpg')
+    for i,layer in enumerate(total_output.keys()):
         len_ori = total_output[layer].shape[0]
        
         min = total_output[layer].kthvalue(int(len_ori*min_thr)).values.item()
-        min_scale.append(min)
+        min_s = min/final_avg[i]
+        min_scale.append(min_s)
         max = total_output[layer].kthvalue(int(len_ori*max_thr)).values.item()
-        max_scale.append(max)
+        max_s = max/final_avg[i]
+        max_scale.append(max_s)
        
-        print('In layer {}, # of elements is {}, min is {:.6f}, max is {:.6f}'.format(
+        print('In layer {}, # of elements is {}, hoyer_avg: {}, min is {:.6f}, min_scale: {:.6f}, max is {:.6f}, max_scale: {:.6f}'.format(
             layer,
             len_ori,
+            final_avg[i],
             min,
+            min_s,
             max,
+            max_s,
         ))
     torch.save(min_scale, f'output/ann_min_scale_vgg16_cifar10_tdbn_{str(min_thr)}')
     torch.save(max_scale, f'output/ann_max_scale_vgg16_cifar10_tdbn_{str(max_thr)}')
@@ -136,4 +154,4 @@ if __name__ == '__main__':
 
     filename = 'output/ann_tdbn_layer_output'
     total_output = torch.load(filename)
-    tdbn_train(total_output, 0.4, 0.6)
+    tdbn_train(total_output, 0.3, 0.7)

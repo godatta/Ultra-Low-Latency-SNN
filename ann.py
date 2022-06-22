@@ -213,7 +213,7 @@ def test(epoch, loader):
     act_losses = AverageMeter('Loss') 
     thr_losses = AverageMeter('Loss')
     total_losses = AverageMeter('Loss')
-    hoyer_thrs = {}
+    hoyer_thr_per_batch = []
 
     with torch.no_grad():
         model.eval()
@@ -230,9 +230,9 @@ def test(epoch, loader):
             if torch.cuda.is_available() and args.gpu:
                 data, target = data.cuda(), target.cuda()
             
-            if get_scale and test_only:
-                output, thresholds, relu_batch_num, act_out = model(data, -2)
-            elif test_only and get_layer_output and batch_idx < 100 and epoch == 1:
+            # if get_scale and test_only:
+            #     output, thresholds, relu_batch_num, act_out = model(data, -2)
+            if test_only and get_layer_output and batch_idx < 100 and epoch == 1:
                 output, thresholds, relu_batch_num, act_out = model(data, -1)
                 for l in act_out.keys():
                     act_out[l] = act_out[l][act_out[l]>0]
@@ -250,20 +250,27 @@ def test(epoch, loader):
                     # act_reg += (torch.sum(torch.abs(act_out[l]))**2 / torch.sum((act_out[l])**2))
                     if test_type == 'v2' and len(act_out[l].shape) == 4:
                         N,C,W,H = act_out[l].shape
-                        index_M = 2**(torch.arange(1, W*H+1).reshape(W,H).cuda())
+                        # index_M = 2**(torch.arange(1, W*H+1).reshape(W,H).cuda())
                         act_out[l][act_out[l]>0] = 1.0
                         # print('act_out sum: {}, nums: {}'.format(torch.sum(act_out[l]), torch.count_nonzero(act_out[l])))
-                        act_out[l] = act_out[l]*index_M
-                        act_out[l] = torch.sum(act_out[l], dim=(2,3))
-                    elif test_type == 'v2' and len(act_out[l].shape) == 2:
-                        N,D = act_out[l].shape
-                        act_out[l][act_out[l]>0] = 1
-                        index_M = 2**(torch.arange(1,D+1).cuda())
-                        # print('act_out sum: {}, nums: {}'.format(torch.sum(act_out[l]), torch.count_nonzero(act_out[l])))
-                        act_out[l] = act_out[l]*index_M
+                        # act_out[l] = act_out[l]*index_M
+                        # act_out[l] = torch.sum(act_out[l], dim=(2,3))
+                        res[l] = torch.sum(act_out[l], dim=(0)).cpu()
+                        print('res shape: {}'.format(res[l].shape))
+                        res[l] = res[l][0]
 
-                    total_net_output = torch.cat((total_net_output, act_out[l].view(-1).cpu()))
-                    res[l] =  act_out[l].view(-1).cpu().numpy()
+                    elif test_type == 'v2' and len(act_out[l].shape) == 2:
+                        # N,D = act_out[l].shape
+                        act_out[l][act_out[l]>0] = 1
+                        # index_M = 2**(torch.arange(1,D+1).cuda())
+                        # # print('act_out sum: {}, nums: {}'.format(torch.sum(act_out[l]), torch.count_nonzero(act_out[l])))
+                        # act_out[l] = act_out[l]*index_M
+                        res[l] = torch.sum(act_out[l], dim=(0)).cpu()
+                        print('res shape: {}'.format(res[l].shape))
+
+                    # total_net_output = torch.cat((total_net_output, act_out[l].view(-1).cpu()))
+                    # res[l] =  act_out[l].view(-1).cpu().numpy()
+                    # res[l] =  act_out[l].cpu().numpy()
                         
                     # writer.add_histogram(f'Dist/layer {l} distribution', act_out[l].view(-1).cpu().numpy())
                     f.write(f'\nlayer {l} shape: {act_out[l].shape}, net_output: {total_net_output.shape}')
@@ -283,11 +290,12 @@ def test(epoch, loader):
             loss = F.cross_entropy(output,target)
             data_size = data.size(0)
             if get_scale:
-                for k in act_out.keys():
-                    if k not in hoyer_thrs:
-                        hoyer_thrs[k] = AverageMeter('Hoyer_threshold')
-                    hoyer_thrs[k].update(act_out[k], data_size)
+                if len(hoyer_thr_per_batch) <= 0:
+                    hoyer_thr_per_batch = (model.test_hoyer_thr).cpu().numpy()
+                else:
+                    hoyer_thr_per_batch = np.vstack((hoyer_thr_per_batch, (model.test_hoyer_thr).cpu().numpy()))
                 act_loss = 0.0
+                # print('hoyer_thr_per_batch shape: {}'.format(hoyer_thr_per_batch.shape))
             elif test_only:
                 act_loss = 0.0
             else:
@@ -320,11 +328,10 @@ def test(epoch, loader):
         #if epoch>30 and top1.avg<0.15:
         #    f.write('\n Quitting as the training is not progressing')
         #    exit(0)
+        final_avg = np.array([(p.data)/(batch_idx+1) for p in test_hoyer_thr])
         if get_scale:
-            hoyer_dict = {}
-            for k in hoyer_thrs.keys():
-                hoyer_dict[k] = hoyer_thrs[k].avg
-            torch.save(hoyer_dict, 'output/my_hoyer_x_scale_factor')
+            torch.save(hoyer_thr_per_batch, 'output/my_hoyer_x_scale_factor')
+            torch.save(final_avg, 'output/my_hoyer_x_scale_factor_final_avg')
         if get_layer_output:
             torch.save(total_output, 'output/ann_tdbn_layer_output')
         if not test_only and use_wandb:
@@ -367,7 +374,8 @@ def test(epoch, loader):
             datetime.timedelta(seconds=(datetime.datetime.now() - start_time).seconds)
             )
         )
-        f.write('\n The hoyer thr in ann is: {}'.format([(p.data)/batch_idx for p in test_hoyer_thr]))
+
+        f.write('\nThe hoyer thr in ann is: {}'.format(final_avg))
 
         # f.write('\n Time: {}'.format(
         #     datetime.timedelta(seconds=(datetime.datetime.now() - current_time).seconds)

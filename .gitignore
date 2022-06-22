@@ -8,6 +8,8 @@ logs_ann
 output/ann_tdbn_layer_output
 output/my_hoyer_x_scale_factor
 output/check.py
+output/fixed
+output/my_hoyer_x_scale_factor_final_avg
 backup
 runs
 network_output/*.jpg

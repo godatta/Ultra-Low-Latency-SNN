@@ -113,22 +113,23 @@ class Threshold_mean(torch.autograd.Function):
     def forward(ctx, input, epoch, min_thr_scale=0.0, max_thr_scale=1.0, layer_index=0, start_spike_layer=0):
         ctx.save_for_backward(input)
         ctx.epoch = epoch
-        ctx.min_thr_scale, ctx.max_thr_scale = min_thr_scale, max_thr_scale
         ctx.layer_index = layer_index
         relu = nn.ReLU()
-        out = relu(input-min_thr_scale)
-        out[input >= max_thr_scale] = 1.0
+        out = relu(input-0.0)
+        out[input >= 1.0] = 1.0
         # 2, 5, 9, 12, 16, 19, 22, 26, 29, 32, 36, 39, 42, 44, 46
         if layer_index >= 44:
             hoyer_thr = torch.mean(torch.sum((out)**2, dim=1) / torch.sum(torch.abs(out), dim=1))
         else:
             hoyer_thr = torch.mean(torch.sum((out)**2, dim=(1,2,3)) / torch.sum(torch.abs(out), dim=(1,2,3)))
+        ctx.min_thr_scale, ctx.max_thr_scale = min_thr_scale*hoyer_thr, max_thr_scale*hoyer_thr
         ctx.x_scale = 1.0
         # ctx.hoyer_thr = hoyer_thr
         # hoyer_thr = 1.0
         if layer_index >= start_spike_layer:
             out[out <= ctx.x_scale*hoyer_thr] = 0.0
-        out[out >= ctx.x_scale*hoyer_thr] = 1.0
+        out[out >= max_thr_scale*hoyer_thr] = 1.0
+        out[out <= min_thr_scale*hoyer_thr] = 0.0
         return out
 
     @staticmethod
@@ -139,9 +140,11 @@ class Threshold_mean(torch.autograd.Function):
         grad_input = grad_output.clone()
         grad_inp = torch.zeros_like(input).cuda()
 
-        grad_inp[input > (-1.0*ctx.min_thr_scale)] = 1.0
-        # grad_inp[input > (2.0*ctx.x_scale*ctx.hoyer_thr)] = 0.0
-        grad_inp[input > (2.0*ctx.max_thr_scale)] = 0.0
+        grad_inp[input > (1.0*ctx.min_thr_scale)] = 1.0
+        grad_inp[input > (2.0*ctx.max_thr_scale-ctx.min_thr_scale)] = 0.0
+        # grad_inp[input > (2.0*ctx.max_thr_scale)] = 0.0
+        # grad_inp[input > (-1.0*0.0)] = 1.0
+        # grad_inp[input > (2.0*1.0)] = 0.0
 
         return grad_inp*grad_input, None, None, None, None, None
 class Threshold_sum(torch.autograd.Function):
@@ -522,11 +525,11 @@ class VGG_TUNABLE_THRESHOLD_tdbn(nn.Module):
         out[out < 0.0] = 0.0
         out[out >= 1.0] = 1.0
         if layer_index >= 44:
-            # hoyer_thr = torch.mean(torch.sum((out)**2, dim=1) / torch.sum(torch.abs(out), dim=1))
-            hoyer_thr = torch.sum((out)**2) / torch.sum(torch.abs(out))
+            hoyer_thr = torch.mean(torch.sum((out)**2, dim=1) / torch.sum(torch.abs(out), dim=1))
+            # hoyer_thr = torch.sum((out)**2) / torch.sum(torch.abs(out))
         else:
-            # hoyer_thr = torch.mean(torch.sum((out)**2, dim=(1,2,3)) / torch.sum(torch.abs(out), dim=(1,2,3)))
-            hoyer_thr = torch.sum((out)**2) / torch.sum(torch.abs(out))
+            hoyer_thr = torch.mean(torch.sum((out)**2, dim=(1,2,3)) / torch.sum(torch.abs(out), dim=(1,2,3)))
+            # hoyer_thr = torch.sum((out)**2) / torch.sum(torch.abs(out))
             # hoyer_sum = torch.sum((out)**2, dim=(0,2,3)) / torch.sum(torch.abs(out), dim=(0,2,3))
             
             # hoyer_cw = torch.sum((out)**2, dim=(2,3)) / torch.sum(torch.abs(out), dim=(2,3))
@@ -570,8 +573,8 @@ class VGG_TUNABLE_THRESHOLD_tdbn(nn.Module):
                 relu_total_num += self.num_relu(out.clone().detach(), 0.0, 1.0, torch.max(out).clone().detach())
                 if epoch == -1:
                     act_out[l] = out.clone().detach()
-                elif epoch == -2:
-                    act_out[l] = torch.mean(torch.sum((out)**2, dim=(1,2,3)) / torch.sum(torch.abs(out), dim=(1,2,3))) # hoyer threshold
+                # elif epoch == -2:
+                #     act_out[l] = torch.mean(torch.sum((out)**2, dim=(1,2,3)) / torch.sum(torch.abs(out), dim=(1,2,3))) # hoyer threshold
                 else:
                     if torch.sum(torch.abs(out))>0 and l < self.start_spike_layer:
                         if self.hoyer_type == 'mean':
@@ -611,8 +614,8 @@ class VGG_TUNABLE_THRESHOLD_tdbn(nn.Module):
                 relu_total_num += self.num_relu(out, 0.0, 1.0, torch.max(out).clone().detach())
                 if epoch == -1:
                     act_out[prev+l] = out.clone().detach()
-                elif epoch == -2:
-                    act_out[prev+l] = torch.mean(torch.sum((out)**2, dim=1) / torch.sum(torch.abs(out), dim=1)) # hoyer threshold
+                # elif epoch == -2:
+                #     act_out[prev+l] = torch.mean(torch.sum((out)**2, dim=1) / torch.sum(torch.abs(out), dim=1)) # hoyer threshold
                 else:
                     if torch.sum(torch.abs(out))>0 and prev+l < self.start_spike_layer:
                         if self.hoyer_type == 'mean':

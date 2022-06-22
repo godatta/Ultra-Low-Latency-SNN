@@ -576,7 +576,7 @@ if __name__ == '__main__':
                 mode=net_mode, hoyer_type=hoyer_type, act_type=act_mode, start_spike_layer=start_spike_layer)
         elif act_type == 'tdbn':
             model = VGG_TUNABLE_THRESHOLD_tdbn(vgg_name=architecture, labels=labels, dataset=dataset, kernel_size=kernel_size, linear_dropout=linear_dropout, conv_dropout = conv_dropout, default_threshold=threshold,\
-                mode=net_mode, hoyer_type=hoyer_type, act_mode=act_mode, bn_type=bn_type, start_spike_layer=start_spike_layer, conv_type=conv_type)
+                net_mode=net_mode, hoyer_type=hoyer_type, act_mode=act_mode, bn_type=bn_type, start_spike_layer=start_spike_layer, conv_type=conv_type)
 
     elif architecture[0:3].lower() == 'res':
         if architecture.lower() == 'resnet12':
