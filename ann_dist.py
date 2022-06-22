@@ -1,7 +1,10 @@
 import argparse
 from operator import ge
-
+from models.vgg_tunable_threshold import VGG_TUNABLE_THRESHOLD
+from models.vgg_tunable_threshold_relu import VGG_TUNABLE_THR_ReLU
+from models.vgg_tunable_threshold_v3 import VGG_TUNABLE_THRESHOLD_v3
 from models.vgg_tunable_threshold_tdbn import VGG_TUNABLE_THRESHOLD_tdbn
+from models.vgg import VGG
 from models.resnet_tunable_threshold import *
 import torch
 import torch.nn as nn
@@ -17,6 +20,8 @@ import os
 import numpy as np
 import json
 import pickle
+
+from torch.utils.data.distributed import DistributedSampler
 
 # from torch.utils.tensorboard import SummaryWriter
 import wandb
@@ -90,7 +95,6 @@ def train(epoch, loader):
     act_losses = AverageMeter('Loss')
     total_losses = AverageMeter('Loss')
     top1   = AverageMeter('Acc@1')
-    
 
     if epoch in lr_interval:
         for param_group in optimizer.param_groups:
@@ -105,7 +109,6 @@ def train(epoch, loader):
     
     #total_correct   = 0
     relu_total_num = torch.tensor([0.0, 0.0, 0.0, 0.0])
-    test_hoyer_thr = torch.tensor([0.0]*15)
     model.train()
     for batch_idx, (data, target) in enumerate(loader):
         
@@ -116,10 +119,10 @@ def train(epoch, loader):
                 
         optimizer.zero_grad()
         #output, _ = model(data)
-        # if act_type == 'relu':
-        #     output, model_thr, relu_batch_num, act_out, thr_out = model(data, epoch)
-        # else:
-        output, model_thr, relu_batch_num, act_out = model(data, epoch)
+        if act_type == 'relu':
+            output, model_thr, relu_batch_num, act_out, thr_out = model(data, epoch)
+        else:
+            output, model_thr, relu_batch_num, act_out = model(data, epoch)
         loss = F.cross_entropy(output,target)
         #make_dot(loss).view()
 
@@ -127,17 +130,17 @@ def train(epoch, loader):
         act_loss = hoyer_decay*act_out
         # total_loss = loss + act_loss
         total_loss = loss + act_loss
-        # if act_type == 'relu':
-        #     thr_loss = thr_decay*thr_out
-        #     total_loss += thr_loss
+        if act_type == 'relu':
+            thr_loss = thr_decay*thr_out
+            total_loss += thr_loss
         total_loss.backward(inputs = list(model.parameters()))
         
         optimizer.step()       
         
         losses.update(loss.item(),data_size)
         act_losses.update(act_loss, data_size)
-        # if act_type == 'relu':
-        #     thr_losses.update(thr_loss, data_size)
+        if act_type == 'relu':
+            thr_losses.update(thr_loss, data_size)
         # reg_losses.update(reg_loss, data_size)
         total_losses.update(total_loss.item(), data_size)
 
@@ -145,7 +148,6 @@ def train(epoch, loader):
         correct = pred.eq(target.data.view_as(pred)).cpu().sum()
         top1.update(correct.item()/data_size, data_size)
         relu_total_num += relu_batch_num
-        test_hoyer_thr += model.test_hoyer_thr
         # torch.cuda.empty_cache()
         if epoch == 1 and batch_idx < 5:
             f.write('\nbatch: {}, train_loss: {:.4f}, act_loss: {:.4f}, thr_loss: {:.4f} total_train_loss: {:.4f} '.format(
@@ -162,7 +164,6 @@ def train(epoch, loader):
             relu_total_num[2]/relu_total_num[-1]*100,
             datetime.timedelta(seconds=(datetime.datetime.now() - start_time).seconds)
             ))
-        
   
     # writer.add_scalars('Loss/train', {
     #     'loss': losses.avg,
@@ -174,37 +175,35 @@ def train(epoch, loader):
     # writer.add_scalar('Relu/less_eq_0', relu_total_num[0]/relu_total_num[-1]*100, epoch)
     # writer.add_scalar('Relu/between_0_thr', relu_total_num[1]/relu_total_num[-1]*100, epoch)
     # writer.add_scalar('Relu/laeger_eq_thr', relu_total_num[2]/relu_total_num[-1]*100, epoch)
-    if use_wandb:
+    if local_rank == 0:
         wandb.log({
             'loss': losses.avg,
             'loss_act': act_losses.avg,
             'loss_thr': thr_losses.avg,
             'total_loss': total_losses.avg
         }, step=epoch)
-        for i in range(len(model.test_hoyer_thr)):
-            wandb.log({f'hoyer_thr_{i}': test_hoyer_thr[i]/batch_idx}, step=epoch)
         wandb.log({'training_acc': top1.avg}, step=epoch)
         wandb.log({'Relu_less_eq_0': relu_total_num[0]/relu_total_num[-1]*100}, step=epoch)
         wandb.log({'Relu_between_0_thr': relu_total_num[1]/relu_total_num[-1]*100}, step=epoch)
         wandb.log({'Relu_laeger_eq_thr': relu_total_num[2]/relu_total_num[-1]*100}, step=epoch)
-    f.write('\n The threshold in ann is: {}'.format([p.data for p in model_thr]))
-    f.write('\nEpoch: {}, lr: {:.1e}, train_loss: {:.4f}, act_loss: {:.4f}, thr_loss: {:.4f} total_train_loss: {:.4f} '.format(
-            epoch,
-            learning_rate,
-            losses.avg,
-            act_losses.avg,
-            thr_losses.avg,
-            total_losses.avg,
+        f.write('\n The threshold in ann is: {}'.format([p.data for p in model_thr]))
+        f.write('\nEpoch: {}, lr: {:.1e}, train_loss: {:.4f}, act_loss: {:.4f}, thr_loss: {:.4f} total_train_loss: {:.4f} '.format(
+                epoch,
+                learning_rate,
+                losses.avg,
+                act_losses.avg,
+                thr_losses.avg,
+                total_losses.avg,
+                )
             )
-        )
-    f.write('train_acc: {:.4f}, output 0: {:.2f}%, relu: {:.2f}%, output threshold: {:.2f}%, time: {}'.format(
-            top1.avg,
-            relu_total_num[0]/relu_total_num[-1]*100,
-            relu_total_num[1]/relu_total_num[-1]*100,
-            relu_total_num[2]/relu_total_num[-1]*100,
-            datetime.timedelta(seconds=(datetime.datetime.now() - start_time).seconds)
+        f.write('train_acc: {:.4f}, output 0: {:.2f}%, relu: {:.2f}%, output threshold: {:.2f}%, time: {}'.format(
+                top1.avg,
+                relu_total_num[0]/relu_total_num[-1]*100,
+                relu_total_num[1]/relu_total_num[-1]*100,
+                relu_total_num[2]/relu_total_num[-1]*100,
+                datetime.timedelta(seconds=(datetime.datetime.now() - start_time).seconds)
+                )
             )
-        )
 
 def test(epoch, loader):
 
@@ -220,11 +219,23 @@ def test(epoch, loader):
         total_loss = 0
         correct = 0
         #dis = []
-        total_output = {}
+
         global max_accuracy, start_time
+        if args.layer_output:
+            print('layer output')
+            total_output = {}
+            for batch_idx, (data, target) in enumerate(train_loader):
+                if batch_idx == 60:
+                    break
+                if torch.cuda.is_available() and args.gpu:
+                    data, target = data.cuda(), target.cuda()
+                output, spike_count, layer_output = model(data, epoch)
+                total_output[batch_idx] = layer_output.copy()
             
+            # torch.save(total_output, 'output/ann_classifier_layer_output')
+            # torch.save(total_output, 'output/ann_features_layer_output')
+            return
         relu_total_num = torch.tensor([0.0, 0.0, 0.0, 0.0])
-        test_hoyer_thr = torch.tensor([0.0]*15)
         for batch_idx, (data, target) in enumerate(loader):
                         
             if torch.cuda.is_available() and args.gpu:
@@ -232,15 +243,6 @@ def test(epoch, loader):
             
             if get_scale and test_only:
                 output, thresholds, relu_batch_num, act_out = model(data, -2)
-            elif test_only and get_layer_output and batch_idx < 100 and epoch == 1:
-                output, thresholds, relu_batch_num, act_out = model(data, -1)
-                for l in act_out.keys():
-                    act_out[l] = act_out[l][act_out[l]>0]
-                    act_out[l] = act_out[l][act_out[l]<1.0]
-                    if l not in total_output:
-                        total_output[l] = torch.tensor([])
-                    total_output[l] = torch.cat((total_output[l], act_out[l].cpu()))
-
             elif test_only and batch_idx == 0 and epoch == 1:
                 output, thresholds, relu_batch_num, act_out = model(data, -1)
                 # act_reg = 0.0
@@ -248,35 +250,21 @@ def test(epoch, loader):
                 total_net_output = torch.tensor([])
                 for l in act_out.keys():
                     # act_reg += (torch.sum(torch.abs(act_out[l]))**2 / torch.sum((act_out[l])**2))
-                    if test_type == 'v2' and len(act_out[l].shape) == 4:
-                        N,C,W,H = act_out[l].shape
-                        index_M = 2**(torch.arange(1, W*H+1).reshape(W,H).cuda())
-                        act_out[l][act_out[l]>0] = 1.0
-                        # print('act_out sum: {}, nums: {}'.format(torch.sum(act_out[l]), torch.count_nonzero(act_out[l])))
-                        act_out[l] = act_out[l]*index_M
-                        act_out[l] = torch.sum(act_out[l], dim=(2,3))
-                    elif test_type == 'v2' and len(act_out[l].shape) == 2:
-                        N,D = act_out[l].shape
-                        act_out[l][act_out[l]>0] = 1
-                        index_M = 2**(torch.arange(1,D+1).cuda())
-                        # print('act_out sum: {}, nums: {}'.format(torch.sum(act_out[l]), torch.count_nonzero(act_out[l])))
-                        act_out[l] = act_out[l]*index_M
-
                     total_net_output = torch.cat((total_net_output, act_out[l].view(-1).cpu()))
-                    res[l] =  act_out[l].view(-1).cpu().numpy()
-                        
-                    # writer.add_histogram(f'Dist/layer {l} distribution', act_out[l].view(-1).cpu().numpy())
                     f.write(f'\nlayer {l} shape: {act_out[l].shape}, net_output: {total_net_output.shape}')
+                    if epoch == 1 and batch_idx == 0:
+                        res[l] =  act_out[l].view(-1).cpu().numpy()
+                        # writer.add_histogram(f'Dist/layer {l} distribution', act_out[l].view(-1).cpu().numpy())
 
                 res['total'] = total_net_output.view(-1).cpu().numpy()
                 # writer.add_histogram('Dist/output distribution', total_net_output.view(-1).cpu().numpy())
                 torch.save(res, 'network_output/'+identifier)
-
             else:
-                # if act_type == 'relu':
-                #     output, thresholds, relu_batch_num, act_out, thr_out = model(data, epoch)
-                # else:
-                output, thresholds, relu_batch_num, act_out = model(data, epoch)
+                if act_type == 'relu':
+                    output, thresholds, relu_batch_num, act_out, thr_out = model(data, epoch)
+                    
+                else:
+                    output, thresholds, relu_batch_num, act_out = model(data, epoch)
 
             #output, thresholds = model(data)
             #dis.extend(act)
@@ -293,21 +281,20 @@ def test(epoch, loader):
             else:
                 act_loss = hoyer_decay*act_out
             total_loss = loss+act_loss
-            # if act_type == 'relu':
-            #     thr_loss = thr_decay*thr_out
-            #     total_loss += thr_loss
+            if act_type == 'relu':
+                thr_loss = thr_decay*thr_out
+                total_loss += thr_loss
             pred = output.max(1, keepdim=True)[1]
             correct = pred.eq(target.data.view_as(pred)).cpu().sum()
 
             act_losses.update(act_loss, data_size)
             losses.update(loss.item(), data_size)
-            # if act_type == 'relu':
-            #     thr_losses.update(thr_loss, data_size)
+            if act_type == 'relu':
+                thr_losses.update(thr_loss, data_size)
             total_losses.update(total_loss.item(), data_size)
             top1.update(correct.item()/data_size, data_size)
 
             relu_total_num += relu_batch_num
-            test_hoyer_thr += model.test_hoyer_thr
         #with open('percentiles_resnet20_cifar100.json','w') as f:
         #    json.dump(percentiles, f)
 
@@ -325,9 +312,7 @@ def test(epoch, loader):
             for k in hoyer_thrs.keys():
                 hoyer_dict[k] = hoyer_thrs[k].avg
             torch.save(hoyer_dict, 'output/my_hoyer_x_scale_factor')
-        if get_layer_output:
-            torch.save(total_output, 'output/ann_tdbn_layer_output')
-        if not test_only and use_wandb:
+        if not test_only:
             wandb.log({'test_acc': top1.avg}, step=epoch)
         # writer.add_scalar('Accuracy/test', top1.avg, epoch)
         if (top1.avg>=max_accuracy) and top1.avg>0.88:
@@ -337,7 +322,7 @@ def test(epoch, loader):
             state = {
                     'accuracy'      : max_accuracy,
                     'epoch'         : epoch,
-                    'state_dict'    : model.state_dict(),
+                    'state_dict'    : model.module.state_dict(),
                     'optimizer'     : optimizer.state_dict()
             }
             try:
@@ -367,7 +352,6 @@ def test(epoch, loader):
             datetime.timedelta(seconds=(datetime.datetime.now() - start_time).seconds)
             )
         )
-        f.write('\n The hoyer thr in ann is: {}'.format([(p.data)/batch_idx for p in test_hoyer_thr]))
 
         # f.write('\n Time: {}'.format(
         #     datetime.timedelta(seconds=(datetime.datetime.now() - current_time).seconds)
@@ -405,27 +389,39 @@ if __name__ == '__main__':
     parser.add_argument('--linear_dropout',         default=0.1,                type=float,     help='dropout percentage for linear layers')
     parser.add_argument('--conv_dropout',           default=0.1,                type=float,     help='dropout percentage for conv layers')
 
-    parser.add_argument('--get_layer_output',       action='store_true',                        help='save the output of eavry layer')
+    parser.add_argument('--layer_output',           action='store_true',                        help='save the output of eavry layer')
     parser.add_argument('--use_init_thr',           action='store_true',                        help='use the inital threshold')
     parser.add_argument('--get_scale',              action='store_true',                        help='get the scale factors for every layer')
-    parser.add_argument('--use_x_scale',            action='store_true',                        help='use the scale factors for every layer')
-    # parser.add_argument('--reg_decay',              default=0.0001,             type=float,     help='weight decay for threshold loss (default: 0.001)')
-    # parser.add_argument('--reg_type',               default=0,                  type=int,       help='regularization type: 0:None 1:L1 2:Hoyer 3:HS')
+    parser.add_argument('--use_x_scale',            action='store_true',                      help='use the scale factors for every layer')
+    parser.add_argument('--reg_decay',              default=0.0001,             type=float,     help='weight decay for threshold loss (default: 0.001)')
+    parser.add_argument('--reg_type',               default=0,                  type=int,       help='regularization type: 0:None 1:L1 2:Hoyer 3:HS')
     parser.add_argument('--hoyer_decay',            default=0.0001,             type=float,     help='weight decay for regularizer (default: 0.001), original: act_decay')
-    parser.add_argument('--net_mode',               default='ori',              type=str,       help='ori: original one, cut: cut the threshold')
-    # parser.add_argument('--act_type',               default='spike',            type=str,       help='thr: tunable threshold, relu: relu with thr, spike: tunable spiking')
-    # parser.add_argument('--thr_decay',              default=0.0001,             type=float,     help='weight decay for threshold loss (default: 0.001)')
+    parser.add_argument('--net_mode',               default='cut',              type=str,       help='ori: original one, cut: cut the threshold')
+    parser.add_argument('--act_type',               default='v3',               type=str,       help='thr: tunable threshold, relu: relu with thr, spike: tunable spiking')
+    parser.add_argument('--thr_decay',              default=0.0001,             type=float,     help='weight decay for threshold loss (default: 0.001)')
     parser.add_argument('--hoyer_type',             default='mean',             type=str,       help='mean:, sum:, mask')
-    parser.add_argument('--act_mode',               default='v1',               type=str,       help='fixed,mean,sum,channelwise(cw), spike: the type of activation function')
+    parser.add_argument('--act_mode',               default='v1',               type=str,       help='v1:, ori:,')
     parser.add_argument('--start_spike_layer',      default=20,                 type=int,       help='start_spike_layer')
-    parser.add_argument('--bn_type',                default='bn',               type=str,       help='bn: , tdbn: , fake: the type of batch normalization')
-    parser.add_argument('--conv_type',              default='ori',              type=str,       help='ori: original conv, dy: dynamic conv,')
-    parser.add_argument('--test_type',              default='v1',               type=str,       help='v1: dist of the output of every layer, v2: visualize the hist of every activation map,')
-    parser.add_argument('--use_wandb',              action='store_true',                        help='if use wandb to record exps')
+    parser.add_argument('--bn_type',                default='bn',               type=str,       help='bn:, tdbn:,')
+    parser.add_argument('--conv_type',              default='ori',              type=str,       help='ori:, dy:,')
+
+    parser.add_argument('--nodes',                  default=1,                  type=int,       help='nodes')
+    parser.add_argument('--gpu_nums',               default=4,                  type=int,       help='nodes')
+    parser.add_argument('--rank',                   default=0,                  type=int,       help='ranking within the nodes')
+
+
 
     args=parser.parse_args()
 
     os.environ['CUDA_VISIBLE_DEVICES'] = args.devices
+
+    # distubition initialization
+    torch.distributed.init_process_group(backend="nccl")
+    local_rank = torch.distributed.get_rank()
+    print('local rank: {}'.format(local_rank))
+    torch.cuda.set_device(local_rank)
+    device = torch.device("cuda", local_rank)
+
 
     # Seed random number
     torch.manual_seed(args.seed)
@@ -456,21 +452,18 @@ if __name__ == '__main__':
 
     linear_dropout  = args.linear_dropout
     conv_dropout    = args.conv_dropout
-    get_layer_output = args.get_layer_output
     use_init_thr    = args.use_init_thr
     get_scale       = args.get_scale
     use_x_scale     = args.use_x_scale
     net_mode        = args.net_mode
-    # act_type        = args.act_type
-    # thr_decay       = args.thr_decay
-    hoyer_decay     = args.hoyer_decay
+    act_type        = args.act_type
+    thr_decay       = args.thr_decay
+    hoyer_decay       = args.hoyer_decay
     hoyer_type      = args.hoyer_type
     act_mode        = args.act_mode
     start_spike_layer = args.start_spike_layer
     bn_type         = args.bn_type
     conv_type       = args.conv_type
-    test_type       = args.test_type
-    use_wandb       = args.use_wandb
 
     values = lr_interval_arg.split()
     lr_interval = []
@@ -496,7 +489,7 @@ if __name__ == '__main__':
     else:
         f=sys.stdout
     
-
+    
     f.write('\n Run on time: {}'.format(datetime.datetime.now()))
             
     f.write('\n\n Arguments:')
@@ -565,15 +558,25 @@ if __name__ == '__main__':
                             ]))
 
 
+    train_sampler = DistributedSampler(train_dataset)
+    test_sampler = DistributedSampler(test_dataset)
+    train_loader    = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=batch_size, sampler=train_sampler)
     
-    train_loader    = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=True)
-    
-    test_loader     = torch.utils.data.DataLoader(dataset=test_dataset, batch_size=batch_size, shuffle=False)
+    test_loader     = torch.utils.data.DataLoader(dataset=test_dataset, batch_size=batch_size, sampler=test_sampler)
     
     if architecture[0:3].lower() == 'vgg':
-        # act_type == 'tdbn'
-        model = VGG_TUNABLE_THRESHOLD_tdbn(vgg_name=architecture, labels=labels, dataset=dataset, kernel_size=kernel_size, linear_dropout=linear_dropout, conv_dropout = conv_dropout, default_threshold=threshold,\
-            net_mode=net_mode, hoyer_type=hoyer_type, act_mode=act_mode, bn_type=bn_type, start_spike_layer=start_spike_layer, conv_type=conv_type)
+        if act_type == 'thr':
+            model = VGG_TUNABLE_THRESHOLD(vgg_name=architecture, labels=labels, dataset=dataset, kernel_size=kernel_size, linear_dropout=linear_dropout, conv_dropout = conv_dropout, default_threshold=threshold, mode=net_mode)
+        elif act_type == 'relu':
+            model = VGG_TUNABLE_THR_ReLU(vgg_name=architecture, labels=labels, dataset=dataset, kernel_size=kernel_size, linear_dropout=linear_dropout, conv_dropout = conv_dropout, default_threshold=threshold, mode=net_mode)
+        elif act_type == 'vgg':
+            model = VGG(vgg_name=architecture, labels=labels, dataset=dataset, kernel_size=kernel_size, linear_dropout=linear_dropout, conv_dropout = conv_dropout)
+        elif act_type == 'v3':
+            model = VGG_TUNABLE_THRESHOLD_v3(vgg_name=architecture, labels=labels, dataset=dataset, kernel_size=kernel_size, linear_dropout=linear_dropout, conv_dropout = conv_dropout, default_threshold=threshold,\
+                mode=net_mode, hoyer_type=hoyer_type, act_type=act_mode, start_spike_layer=start_spike_layer)
+        elif act_type == 'tdbn':
+            model = VGG_TUNABLE_THRESHOLD_tdbn(vgg_name=architecture, labels=labels, dataset=dataset, kernel_size=kernel_size, linear_dropout=linear_dropout, conv_dropout = conv_dropout, default_threshold=threshold,\
+                mode=net_mode, hoyer_type=hoyer_type, act_mode=act_mode, bn_type=bn_type, start_spike_layer=start_spike_layer, conv_type=conv_type)
 
     elif architecture[0:3].lower() == 'res':
         if architecture.lower() == 'resnet12':
@@ -608,10 +611,10 @@ if __name__ == '__main__':
         missing_keys, unexpected_keys = model.load_state_dict(state['state_dict'], strict=False)
         f.write('\n Missing keys : {}, Unexpected Keys: {}'.format(missing_keys, unexpected_keys))        
         f.write('\n Info: Accuracy of loaded ANN model: {}'.format(state['accuracy']))
-        # f.write('\n The threshold in ann is: {}'.format([model.threshold[key].data for key in model.threshold]))
-        # if use_x_scale:
-        #     model.threshold_update()
-        #     f.write('\n The updated threshold in ann is: {}'.format([model.threshold[key].data for key in model.threshold]))
+        f.write('\n The threshold in ann is: {}'.format([model.threshold[key].data for key in model.threshold]))
+        if use_x_scale:
+            model.threshold_update()
+            f.write('\n The updated threshold in ann is: {}'.format([model.threshold[key].data for key in model.threshold]))
         '''
         state=torch.load(args.pretrained_ann, map_location='cpu')
         cur_dict = model.state_dict()
@@ -640,7 +643,7 @@ if __name__ == '__main__':
     
     if torch.cuda.is_available() and args.gpu:
         model.cuda()
-    
+    model = torch.nn.parallel.DistributedDataParallel(model)
     if optimizer == 'SGD':
         optimizer = optim.SGD(model.parameters(), lr=learning_rate, momentum=momentum, weight_decay=weight_decay)
     elif optimizer == 'Adam':
@@ -651,7 +654,7 @@ if __name__ == '__main__':
     # tensorboard_log_name = 'runs/' + identifier
     # writer = SummaryWriter(tensorboard_log_name)
     # f.write(f'tensorboead log file is saved at {tensorboard_log_name}')
-    if not test_only and use_wandb:
+    if not test_only and local_rank == 0:
         dir = os.path.join('wandb', identifier)
         try:
             os.mkdir(dir)
@@ -661,12 +664,13 @@ if __name__ == '__main__':
         # wandb.watch(model)
     max_accuracy = 0.0
     #compute_mac(model, dataset)
-    # model = nn.DataParallel(model)
+    
     for epoch in range(1, epochs+1):    
         start_time = datetime.datetime.now()
         if not test_only:
             train(epoch, train_loader)
-        test(epoch, test_loader)
+        if local_rank == 0:
+            test(epoch, test_loader)
         if test_only:
             break
     

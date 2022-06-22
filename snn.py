@@ -1,7 +1,8 @@
-
-
 from __future__ import print_function
 import argparse
+from asyncore import write
+from fileinput import filename
+from tokenize import Name
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -14,11 +15,15 @@ from matplotlib.gridspec import GridSpec
 import numpy as np
 import datetime
 import pdb
-from self_models.vgg_tunable_spiking import *
+from models.vgg_tunable_spiking import *
+from models.my_prune import *
 import sys
 import os
 import shutil
 import argparse
+
+import wandb
+
 
 class AverageMeter(object):
     """Computes and stores the average and current value"""
@@ -122,53 +127,66 @@ def train(epoch):
     
     model.train()
     local_time = datetime.datetime.now()  
+    total_num = torch.tensor([0.0, 0.0, 0.0, 0.0])
     
     for batch_idx, (data, target) in enumerate(train_loader):
                
         if torch.cuda.is_available() and args.gpu:
             data, target = data.cuda(), target.cuda()
-        
+
         optimizer.zero_grad()
-        output, _ = model(data) 
-        
+        output, act_out, relu_batch_num = model(data, epoch=epoch)
         loss = F.cross_entropy(output,target)
+        data_size = data.size(0)
         loss.backward()
-        optimizer.step()       
+        optimizer.step()    
+
+        losses.update(loss.item(), data_size)
         pred = output.max(1,keepdim=True)[1]
         correct = pred.eq(target.data.view_as(pred)).cpu().sum()
-        
-        for key, value in model.leak.items():
-            # maximum of leak=1.0
-            model.leak[key].data.clamp_(max=1.0)
-
-        losses.update(loss.item(),data.size(0))
-        top1.update(correct.item()/data.size(0), data.size(0)) 
-             
-        if (batch_idx+1) % train_acc_batches == 0:
+        top1.update(correct.item()/data_size, data_size) 
+  
+        if (batch_idx+1) % train_acc_batches == 0 or (batch_idx < 5 and epoch == 1):
             temp1 = []
             temp2 = []
+            total_batch_num = relu_batch_num
             for key, value in sorted(model.threshold.items(), key=lambda x: (int(x[0][1:]), (x[1]))):
                 temp1 = temp1+[round(value.item(),5)]
-            for key, value in sorted(model.leak.items(), key=lambda x: (int(x[0][1:]), (x[1]))):
-                temp2 = temp2+[round(value.item(),5)]
-            f.write('\n\nEpoch: {}, batch: {}, train_loss: {:.4f}, train_acc: {:.4f}, threshold: {}, leak: {}, timesteps: {}, time: {}'
+            # for l in relu_total_num.keys():
+            #     # f.write('\tIn layer {}, the rate of ReLU is {:.4f}%'.format(l, relu_total_num[l][0]/relu_total_num[l][1]*100.0))
+            #     total_num += relu_total_num[l]
+            f.write('\nEpoch: {}, batch: {}, train_loss: {:.4f}, train_acc: {:.4f}, output 0: {:.2f}%, relu: {:.2f}%, output threshold: {:.2f}% timesteps: {}, time: {}'
                     .format(epoch,
                         batch_idx+1,
                         losses.avg,
                         top1.avg,
-                        temp1,
-                        temp2,
+                        total_batch_num[0]/total_batch_num[-1]*100.0,
+                        total_batch_num[1]/total_batch_num[-1]*100.0,
+                        total_batch_num[2]/total_batch_num[-1]*100.0,
                         model.timesteps,
                         datetime.timedelta(seconds=(datetime.datetime.now() - local_time).seconds)
                         )
                     )
+            f.write('\nthresold: {}, leak: {}'.format(temp1, temp2))
             local_time = datetime.datetime.now()
-        
-    f.write('\nEpoch: {}, lr: {:.1e}, train_loss: {:.4f}, train_acc: {:.4f}, time: {}'
+        total_num += relu_batch_num
+    wandb.log({'loss': losses.avg,}, step=epoch)
+    wandb.log({'training_acc': top1.avg}, step=epoch)
+    wandb.log({'Relu_less_eq_0': total_num[0]/total_num[-1]*100}, step=epoch)
+    wandb.log({'Relu_between_0_thr': total_num[1]/total_num[-1]*100}, step=epoch)
+    wandb.log({'Relu_laeger_eq_thr': total_num[2]/total_num[-1]*100}, step=epoch)
+    
+    # for l in relu_total_num.keys():
+    #     total_num += relu_total_num[l]
+
+    f.write('\nEpoch: {}, lr: {:.1e}, train_loss: {:.4f}, train_acc: {:.4f}, output 0: {:.2f}%, relu: {:.2f}%, output threshold: {:.2f}%, time: {}'
                     .format(epoch,
                         learning_rate,
                         losses.avg,
                         top1.avg,
+                        total_num[0]/total_num[-1]*100.0,
+                        total_num[1]/total_num[-1]*100.0,
+                        total_num[2]/total_num[-1]*100.0,
                         datetime.timedelta(seconds=(datetime.datetime.now() - start_time).seconds)
                         )
                     )
@@ -190,13 +208,50 @@ def test(epoch):
     with torch.no_grad():
         model.eval()
         global max_accuracy
-        
+
+        if args.layer_output:
+            total_output = {}
+            for batch_ids, (data, target) in enumerate(train_loader):
+                if torch.cuda.is_available() and args.gpu:
+                    data, target = data.cuda(), target.cuda()
+                output, spike_count, layer_output = model(data)
+                total_output[batch_ids] = layer_output.copy()
+            
+            torch.save(total_output, 'classifier_layer_output')
+
+        relu_total_num = torch.tensor([0.0, 0.0, 0.0, 0.0])
         for batch_idx, (data, target) in enumerate(test_loader):
                         
             if torch.cuda.is_available() and args.gpu:
                 data, target = data.cuda(), target.cuda()
+            epoch = False if args.test_only else epoch
+            output, act_out, relu_batch_num = model(data, epoch=epoch) 
+
+            if args.test_only and batch_idx==0:
+                res = {}
+                total_net_output = torch.tensor([]).cpu()
+                for l in act_out.keys():
+                    # act_reg += (torch.sum(torch.abs(act_out[l]))**2 / torch.sum((act_out[l])**2))
+                    total_net_output = torch.cat((total_net_output, act_out[l].view(-1).cpu()))
+                    if batch_idx == 0:
+                        f.write(f'\nlayer {l} shape: {act_out[l].shape}, net_output: {total_net_output.shape}')
+                        res[l] =  act_out[l].view(-1).cpu().numpy()
+                        # writer.add_histogram(f'Dist/layer {l} distribution', act_out[l].view(-1).cpu().numpy())
+                for l in relu_batch_num.keys():
+                    if batch_idx==0:
+                        f.write('\nIn layer {}, output 0: {:.2f}%, relu: {:.2f}%, output threshold: {:.2f}%'.format(
+                        l, 
+                        relu_batch_num[l][0]/relu_batch_num[l][-1]*100.0,
+                        relu_batch_num[l][1]/relu_batch_num[l][-1]*100.0,
+                        relu_batch_num[l][2]/relu_batch_num[l][-1]*100.0))
+                    relu_total_num += relu_batch_num[l]
+
+                res['total'] = total_net_output.view(-1).cpu().numpy()
+                # writer.add_histogram('Dist/output distribution', total_net_output.view(-1).cpu().numpy())
+                torch.save(res, 'network_output/'+identifier)
+            if not args.test_only:
+                relu_total_num += relu_batch_num
             
-            output, spike_count = model(data) 
             #for key in spike_count.keys():
             #    print('Key: {}, Average: {:.3f}'.format(key, (spike_count[key].sum()/spike_count[key].numel())))
             loss    = F.cross_entropy(output,target)
@@ -225,12 +280,21 @@ def test(epoch):
         for key, value in sorted(model.leak.items(), key=lambda x: (int(x[0][1:]), (x[1]))):
                 temp2 = temp2+[value.item()]
         
+        # f.write('\n')
+        # total_num = torch.tensor([0.0, 0.0, 0.0, 0.0])
+        # for l in relu_total_num.keys():
+        #     # f.write('\tIn layer {}, the rate of ReLU is {:.4f}%'.format(l, relu_total_num[l][0]/relu_total_num[l][1]*100.0))
+        #     total_num += relu_total_num[l]
+
         #if epoch>5 and top1.avg<0.15:
         #    f.write('\n Quitting as the training is not progressing')
         #    exit(0)
 
-        if top1.avg>max_accuracy:
+
+        if top1.avg >= max_accuracy and top1.avg > 0.80:
             max_accuracy = top1.avg
+        # if top1.avg>max_accuracy or (prune_epoch !=0 and epoch%prune_epoch == 0):
+            # max_accuracy = top1.avg if top1.avg>max_accuracy else max_accuracy
              
             state = {
                     'accuracy'              : max_accuracy,
@@ -242,21 +306,37 @@ def test(epoch):
                     'leak'                  : temp2,
                     'activation'            : activation
                 }
-            try:
-                os.mkdir('./trained_snn_models/')
-            except OSError:
-                pass 
-            filename = './trained_snn_models/'+identifier+'.pth'
-            if not args.dont_save:
-                torch.save(state,filename)    
+            # try:
+            #     os.mkdir('./trained_snn_models/'+identifier+'/')
+            # except OSError:
+            #     pass 
+            # filename = './trained_snn_models/'+identifier+ '/'+ 'epoch_' + str(epoch) + '_' + str(max_accuracy) +'.pth'
+            filename = './trained_snn_models/'+identifier+ '.pth'
+            if not args.dont_save and not args.test_only:
+                torch.save(state,filename)
+
+            if prune_epoch != 0 and epoch == args.epochs:
+                for index, module in model.features.named_children():
+                    if isinstance(module, nn.Conv2d):
+                        prune.remove(module, 'weight')
+                for index, module in model.classifier.named_children():
+                    if isinstance(module, nn.Linear) and int(index) < 2:
+                        prune.remove(module, 'weight')
+                pruned_file = './trained_snn_models/'+identifier+ '/'+ 'pruned_epoch_' + str(epoch) + str(max_accuracy) +'.pth'
+                state['state_dict'] = model.state_dict()
+                torch.save(state, pruned_file)
         
-        print(datetime.timedelta(seconds=(datetime.datetime.now() - start_time).seconds))
-        
-        f.write(' test_loss: {:.4f}, test_acc: {:.4f}, best: {:.4f} time: {}'
+        # print(datetime.timedelta(seconds=(datetime.datetime.now() - start_time).seconds))
+        if not args.test_only:
+            wandb.log({'test_acc': top1.avg}, step=epoch)
+        f.write('\ntest_loss: {:.4f}, test_acc: {:.4f}, best: {:.4f}, output 0: {:.2f}%, relu: {:.2f}%, output threshold: {:.2f}%, time: {}\n'
             .format(
             losses.avg, 
             top1.avg,
             max_accuracy,
+            relu_total_num[0]/relu_total_num[-1]*100,
+            relu_total_num[1]/relu_total_num[-1]*100,
+            relu_total_num[2]/relu_total_num[-1]*100,
             datetime.timedelta(seconds=(datetime.datetime.now() - start_time).seconds)
             )
         )
@@ -264,6 +344,7 @@ def test(epoch):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='SNN training')
+    parser.add_argument('--description',            default='exp desc',         type=str,       help='description for the exp')
     parser.add_argument('--gpu',                    default=True,               type=bool,      help='use gpu')
     parser.add_argument('-s','--seed',              default=0,                  type=int,       help='seed for random number')
     parser.add_argument('--dataset',                default='CIFAR10',          type=str,       help='dataset name', choices=['MNIST','CIFAR10','CIFAR100','IMAGENET'])
@@ -294,6 +375,13 @@ if __name__ == '__main__':
     parser.add_argument('--devices',                default='0',                type=str,       help='list of gpu device(s)')
     parser.add_argument('--resume',                 default='',                 type=str,       help='resume training from this state')
     parser.add_argument('--dont_save',              action='store_true',                        help='don\'t save training model during testing')
+    parser.add_argument('--prune_epoch',            default='0',                                help='prune the neural network evry k epoch')
+    parser.add_argument('--layer_output',           action='store_true',                        help='get the output before relu&dropout for every layer')
+    parser.add_argument('--use_init_thr',           action='store_true',                        help='use the inital threshold')
+    parser.add_argument('--decay',                  default=0.001,              type=float,     help='weight decay for regularizer (default: 0.001)')
+    parser.add_argument('--reg_type',               default=2,                  type=int,       metavar='R',help='regularization type: 0:None 1:L1 2:Hoyer 3:HS')
+    parser.add_argument('--act_decay',              default=-1.0,               type=float,     help='weight decay for activation function regularizer (default: -1)')
+
 
     args = parser.parse_args()
     
@@ -333,6 +421,7 @@ if __name__ == '__main__':
     resume              = args.resume
     start_epoch         = 1
     max_accuracy        = 0.0
+    prune_epoch         = int(args.prune_epoch)
     
     values = args.lr_interval.split()
     lr_interval = []
@@ -344,7 +433,11 @@ if __name__ == '__main__':
         os.mkdir(log_file)
     except OSError:
         pass 
-    identifier = 'snn_'+architecture.lower()+'_'+dataset.lower()+'_'+str(timesteps)+'final'
+    # identifier = 'snn_'+architecture.lower()+'_'+dataset.lower()+'_'+str(timesteps)+'final'
+    identifier = 'snn_'+architecture.lower()+'_'+dataset.lower()+'_'+str(timesteps)+'_'+datetime.datetime.now().strftime('%Y%m%d%H%M')
+    if args.test_only:
+        identifier = pretrained_snn.split('/')[-1][:-4] + '_test'
+    print(identifier)
     log_file+=identifier+'.log'
     
     if args.log:
@@ -437,7 +530,6 @@ if __name__ == '__main__':
     
     elif architecture[0:3].lower() == 'res':
         model = RESNET_SNN(resnet_name = architecture, activation = activation, labels=labels, timesteps=timesteps,leak=leak, default_threshold=default_threshold, dropout=dropout, dataset=dataset)
-
       
     #Please comment this line if you find key mismatch error and uncomment the DataParallel after the if block
     #model = nn.DataParallel(model) 
@@ -462,7 +554,9 @@ if __name__ == '__main__':
         #else:
             #thresholds = find_threshold(batch_size=512, timesteps=500, architecture=architecture)
         #thresholds = [0.8727,1.4557,0.9344,0.5781,0.5672,0.2121,0.1086,0.0641,0.0747,0.1266,0.1786,0.3390,0.6676,0.6794,0.5203]
+        # f.write('\n The threshold in ann is: {}'.format([thr for thr in model.threshold.items()]))
         model.threshold_update(scaling_factor = scaling_factor)
+        # f.write('\n After update, the threshold is: {}'.format([thr for thr in model.threshold.items()]))
             
             #Save the threhsolds in the ANN file
         #temp = {}
@@ -476,11 +570,23 @@ if __name__ == '__main__':
     elif pretrained_snn:
                 
         state = torch.load(pretrained_snn, map_location='cpu')
-        missing_keys, unexpected_keys = model.load_state_dict(state, strict=False)
+        f.write('\n The threshold in snn is: {}'.format([thr for thr in state['thresholds']]))
+        if args.use_init_thr:
+            init_model = torch.load('trained_models_ann/ann_vgg16_cifar10_4.0_0.2lr_decay.pth', map_location='cpu')
+            init_state = init_model['state_dict']
+            for key in init_state.keys():
+                if key[:9] == 'threshold':
+                    state['state_dict'][key] = init_state[key]
+
+        missing_keys, unexpected_keys = model.load_state_dict(state['state_dict'], strict=False)
         f.write('\n Missing keys : {}, Unexpected Keys: {}'.format(missing_keys, unexpected_keys))        
-        f.write('\n Info: Accuracy of loaded ANN model: {}'.format(state['accuracy']))
+        f.write('\n Info: Accuracy of loaded snn model: {}'.format(state['accuracy']))
+        # f.write('\n The threshold in snn is: {}'.format([thr for thr in state['thresholds']]))
+        if args.use_init_thr:
+            model.threshold_update(scaling_factor = scaling_factor)
+
        
-    f.write('\n {}'.format(model))
+    # f.write('\n {}'.format(model))
     
     #model = nn.DataParallel(model) 
     if torch.cuda.is_available() and args.gpu:
@@ -512,16 +618,46 @@ if __name__ == '__main__':
             learning_rate =  param_group['lr']
 
         f.write('\n Loaded from resume epoch: {}, accuracy: {:.4f} lr: {:.1e}'.format(epoch, max_accuracy, learning_rate))
-
-    for epoch in range(start_epoch, epochs):
-        
+    # model = nn.DataParallel(model)
+    if not args.test_only:
+        dir = os.path.join('wandb', identifier)
+        try:
+            os.mkdir(dir)
+        except OSError:
+            pass 
+        wandb.init(project='SNN', name=identifier, group='ann', dir=dir, config=args)
+        # wandb.watch(model)
+    for epoch in range(start_epoch, epochs+1):
         start_time = datetime.datetime.now()
         
         if not args.test_only:
             train(epoch)
-            
+        if prune_epoch != 0 and epoch%prune_epoch == 1:
+            gama = (epoch-1) // prune_epoch * 0.1 + 0.1
+            f.write('\n Before pruning: -----------------\n')
+            test(epoch)
+            scale_x_ = model.scale_factor.clone().detach()
+            t_index = s_index = 0
+            pruned_weight_num = 0.0
+            total_weight_num = 0.0
+            for index, module in model.features.named_children():
+                if isinstance(module, nn.Conv2d):
+                    pruned_num, total_num = check_sparsity(f, f'conv{index}', module, getattr(model.threshold, 't'+str(t_index)).clone().detach(), scale_x_[s_index], gama)
+                    s_index += 1
+                    pruned_weight_num += pruned_num
+                    total_weight_num += total_num
+                t_index += 1
+            for index, module in model.classifier.named_children():
+                if isinstance(module, nn.Linear) and int(index) < 2:
+                    pruned_num, total_num = check_sparsity(f, f'fc{index}', module, getattr(model.threshold, 't'+str(t_index)).clone().detach(), scale_x_[s_index], gama) 
+                    s_index += 1
+                    pruned_weight_num += pruned_num
+                    total_weight_num += total_num
+                t_index += 1
+            f.write('\n After pruning: -----------------\n')
+            f.write('\nThe total sparsity is {:.2f}%\n'.format(100. * pruned_weight_num / total_weight_num))
         test(epoch)
-
+    f.write('\n End on time: {}'.format(datetime.datetime.now()))
     f.write('\n Highest accuracy: {:.4f}'.format(max_accuracy))
 
 
