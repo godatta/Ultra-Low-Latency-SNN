@@ -7,7 +7,7 @@ import os
 import pickle
 import seaborn as sns
 
-output_file = 'network_output/ann_vgg16_cifar10_202206151759_test'
+output_file = 'network_output/ann_vgg16_cifar10_202206220131_test'
 # 'network_output/ann_vgg16_cifar10_202206091914_test'
 # 'network_output/ann_vgg16_cifar10_202205182136_test'
 # 'network_output/snn_vgg16_cifar10_1_202205221408_test'
@@ -118,6 +118,6 @@ def plot_hist():
     # torch.save(mid_hoyers, 'network_output/my_x_scale_factor_1753')
 
 if __name__ == '__main__':
-    plot_hist()
-    # plot()
+    # plot_hist()
+    plot()
     # plot('snn')

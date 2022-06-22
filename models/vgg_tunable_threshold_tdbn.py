@@ -140,11 +140,13 @@ class Threshold_mean(torch.autograd.Function):
         grad_input = grad_output.clone()
         grad_inp = torch.zeros_like(input).cuda()
 
-        grad_inp[input > (1.0*ctx.min_thr_scale)] = 1.0
-        grad_inp[input > (2.0*ctx.max_thr_scale-ctx.min_thr_scale)] = 0.0
+        # grad_inp[input > 0] = 1.0
+        # grad_inp[input > 2*ctx.hoyer_thr] = 0.0
+        # grad_inp[input > ctx.min_thr_scale] = 1.0
+        # grad_inp[input > (2.0*ctx.max_thr_scale-ctx.min_thr_scale)] = 0.0
         # grad_inp[input > (2.0*ctx.max_thr_scale)] = 0.0
-        # grad_inp[input > (-1.0*0.0)] = 1.0
-        # grad_inp[input > (2.0*1.0)] = 0.0
+        grad_inp[input > (-1.0*0.0)] = 1.0
+        grad_inp[input > (2.0*1.0)] = 0.0
 
         return grad_inp*grad_input, None, None, None, None, None
 class Threshold_sum(torch.autograd.Function):

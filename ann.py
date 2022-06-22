@@ -267,9 +267,9 @@ def test(epoch, loader):
                         # act_out[l] = act_out[l]*index_M
                         res[l] = torch.sum(act_out[l], dim=(0)).cpu()
                         print('res shape: {}'.format(res[l].shape))
-
-                    # total_net_output = torch.cat((total_net_output, act_out[l].view(-1).cpu()))
-                    # res[l] =  act_out[l].view(-1).cpu().numpy()
+                    else:
+                        total_net_output = torch.cat((total_net_output, act_out[l].view(-1).cpu()))
+                        res[l] =  act_out[l].view(-1).cpu().numpy()
                     # res[l] =  act_out[l].cpu().numpy()
                         
                     # writer.add_histogram(f'Dist/layer {l} distribution', act_out[l].view(-1).cpu().numpy())
@@ -375,7 +375,7 @@ def test(epoch, loader):
             )
         )
 
-        f.write('\nThe hoyer thr in ann is: {}'.format(final_avg))
+        f.write('\nThe hoyer thr in ann is: {}'.format([(p.data)/(batch_idx+1) for p in test_hoyer_thr]))
 
         # f.write('\n Time: {}'.format(
         #     datetime.timedelta(seconds=(datetime.datetime.now() - current_time).seconds)
