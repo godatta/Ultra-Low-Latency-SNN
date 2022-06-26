@@ -122,7 +122,7 @@ def train(epoch, loader):
         if act_type == 'relu':
             output, model_thr, relu_batch_num, act_out, thr_out = model(data, epoch)
         else:
-            output, model_thr, relu_batch_num, act_out = model(data, epoch)
+            output, act_out = model(data, epoch)
         loss = F.cross_entropy(output,target)
         #make_dot(loss).view()
 
@@ -147,7 +147,7 @@ def train(epoch, loader):
         pred = output.max(1,keepdim=True)[1]
         correct = pred.eq(target.data.view_as(pred)).cpu().sum()
         top1.update(correct.item()/data_size, data_size)
-        relu_total_num += relu_batch_num
+        relu_total_num += model.module.relu_batch_num
         # torch.cuda.empty_cache()
         if epoch == 1 and batch_idx < 5:
             f.write('\nbatch: {}, train_loss: {:.4f}, act_loss: {:.4f}, thr_loss: {:.4f} total_train_loss: {:.4f} '.format(
@@ -186,7 +186,7 @@ def train(epoch, loader):
         wandb.log({'Relu_less_eq_0': relu_total_num[0]/relu_total_num[-1]*100}, step=epoch)
         wandb.log({'Relu_between_0_thr': relu_total_num[1]/relu_total_num[-1]*100}, step=epoch)
         wandb.log({'Relu_laeger_eq_thr': relu_total_num[2]/relu_total_num[-1]*100}, step=epoch)
-        f.write('\n The threshold in ann is: {}'.format([p.data for p in model_thr]))
+        f.write('\n The threshold in ann is: {}'.format([p.data for p in model.module.threshold_out]))
         f.write('\nEpoch: {}, lr: {:.1e}, train_loss: {:.4f}, act_loss: {:.4f}, thr_loss: {:.4f} total_train_loss: {:.4f} '.format(
                 epoch,
                 learning_rate,
@@ -264,7 +264,7 @@ def test(epoch, loader):
                     output, thresholds, relu_batch_num, act_out, thr_out = model(data, epoch)
                     
                 else:
-                    output, thresholds, relu_batch_num, act_out = model(data, epoch)
+                    output, act_out = model(data, epoch)
 
             #output, thresholds = model(data)
             #dis.extend(act)
@@ -294,7 +294,7 @@ def test(epoch, loader):
             total_losses.update(total_loss.item(), data_size)
             top1.update(correct.item()/data_size, data_size)
 
-            relu_total_num += relu_batch_num
+            relu_total_num += model.module.relu_batch_num
         #with open('percentiles_resnet20_cifar100.json','w') as f:
         #    json.dump(percentiles, f)
 

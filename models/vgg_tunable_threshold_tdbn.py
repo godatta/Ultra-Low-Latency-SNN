@@ -80,7 +80,9 @@ class Threshold_relu(torch.autograd.Function):
         out = relu(input-min_thr_scale)
         # 2, 5, 9, 12, 16, 19, 22, 26, 29, 32, 36, 39, 42, 44, 46
         out[input >= max_thr_scale] = 1.0
-
+        ctx.x_scale = 1.0
+        if layer_index >= start_spike_layer:
+            out[out <= ctx.x_scale*max_thr_scale] = 0.0
         # ctx.x_scale = 1.0
         # out[out >= ctx.x_scale*hoyer_thr] = 1.0
         # out[out < ctx.x_scale*hoyer_thr] = 0.0
@@ -128,8 +130,9 @@ class Threshold_mean(torch.autograd.Function):
         # hoyer_thr = 1.0
         if layer_index >= start_spike_layer:
             out[out <= ctx.x_scale*hoyer_thr] = 0.0
-        out[out >= max_thr_scale*hoyer_thr] = 1.0
-        out[out <= min_thr_scale*hoyer_thr] = 0.0
+        out[out >= ctx.x_scale*hoyer_thr] = 1.0
+        # out[out >= max_thr_scale*hoyer_thr] = 1.0
+        # out[out <= min_thr_scale*hoyer_thr] = 0.0
         return out
 
     @staticmethod
@@ -166,7 +169,7 @@ class Threshold_sum(torch.autograd.Function):
 
         hoyer_thr = torch.sum((out)**2) / torch.sum(torch.abs(out))
         
-        ctx.x_scale = 1.0
+        ctx.x_scale = 0.8
         # ctx.hoyer_thr = hoyer_thr
         # hoyer_thr = 1.0
         if layer_index >= start_spike_layer:
@@ -371,21 +374,23 @@ class Threshold_cw(torch.autograd.Function):
 
 class VGG_TUNABLE_THRESHOLD_tdbn(nn.Module):
     def __init__(self, vgg_name='VGG16', labels=10, dataset = 'CIFAR10', kernel_size=3, linear_dropout=0.1, conv_dropout=0.1, default_threshold=1.0, \
-        net_mode='ori', hoyer_type='mean', act_mode = 'mean', bn_type='bn', start_spike_layer=50, conv_type='ori'):
+        net_mode='ori', hoyer_type='mean', act_mode = 'mean', bn_type='bn', start_spike_layer=50, conv_type='ori', pool_pos='after_relu'):
         super(VGG_TUNABLE_THRESHOLD_tdbn, self).__init__()
         
         self.dataset        = dataset
         self.kernel_size    = kernel_size
         self.bn_type        = bn_type
         self.conv_type      = conv_type
+        self.pool_pos       = pool_pos
         self.features       = self._make_layers(cfg[vgg_name])
         self.dropout_conv   = nn.Dropout(conv_dropout)
         self.dropout_linear = nn.Dropout(linear_dropout)
         self.relu = nn.ReLU(inplace=True)
-        # self.relu = nn.ReLU()
         self.hoyer_type     = hoyer_type
         self.start_spike_layer = start_spike_layer
         self.test_hoyer_thr = torch.tensor([0.0]*15)
+        self.threshold_out  = []
+        self.relu_batch_num = torch.tensor([0.0, 0.0, 0.0, 0.0])
 
         if act_mode == 'fixed':
             self.act_func = Threshold_relu.apply
@@ -544,8 +549,8 @@ class VGG_TUNABLE_THRESHOLD_tdbn(nn.Module):
     
     def forward(self, x, epoch=1):   #######epoch
         out_prev = x
-        threshold_out = []
-        relu_total_num = torch.tensor([0.0, 0.0, 0.0, 0.0])
+        self.threshold_out = []
+        self.relu_batch_num = torch.tensor([0.0, 0.0, 0.0, 0.0])
         if epoch < 0:
             act_out = {}
         else:
@@ -565,20 +570,34 @@ class VGG_TUNABLE_THRESHOLD_tdbn(nn.Module):
                     out_prev = self.features[l](out_prev, 0.25)
             if isinstance(self.features[l], (nn.ReLU)):
                 # print('{}, shape: {}'.format(l, out_prev.shape))
-                # relu:
+                # 1. relu:
                 # out = self.relu(out_prev)
-                
+                # 2. x/thr -> act
                 out = out_prev/getattr(self.threshold, 't'+str(l))
                 self.test_hoyer_thr[i] = self.get_hoyer_thr(out.clone().detach(), l)
                 out = self.act_func(out, epoch, self.min_thr_scale[i], self.max_thr_scale[i], l, self.start_spike_layer)
+
+                # 3. x/hoyer_thr -> act
                 
-                relu_total_num += self.num_relu(out.clone().detach(), 0.0, 1.0, torch.max(out).clone().detach())
+                # hoyer_cw = torch.sum((out)**2, dim=(2,3)) / torch.sum(torch.abs(out), dim=(2,3))
+                # hoyer_cw = torch.nan_to_num(hoyer_cw, nan=0.0)
+                # hoyer_cw = torch.mean(hoyer_cw, dim=0)
+                # N,C,W,H = out.shape
+                # hoyer_thr = (torch.permute(hoyer_cw*(torch.ones(N,W,H,C)).cuda(), (0,3,1,2)))
+                # out = self.relu(out_prev)
+                # self.test_hoyer_thr[i] = self.get_hoyer_thr(out.clone().detach(), l)
+                # # hoyer_thr = torch.mean(torch.sum((out)**2, dim=(1,2,3)) / torch.sum(torch.abs(out), dim=(1,2,3)))
+                # hoyer_thr = torch.sum((out)**2) / torch.sum(torch.abs(out))
+                # out = out/hoyer_thr
+                # out = self.act_func(out, epoch, self.min_thr_scale[i], self.max_thr_scale[i], l, self.start_spike_layer)
+                
+                self.relu_batch_num += self.num_relu(out.clone().detach(), 0.0, 1.0, torch.max(out).clone().detach())
                 if epoch == -1:
                     act_out[l] = out.clone().detach()
                 # elif epoch == -2:
                 #     act_out[l] = torch.mean(torch.sum((out)**2, dim=(1,2,3)) / torch.sum(torch.abs(out), dim=(1,2,3))) # hoyer threshold
                 else:
-                    if torch.sum(torch.abs(out))>0 and l < self.start_spike_layer:
+                    if torch.sum(torch.abs(out))>0: #  and l < self.start_spike_layer
                         if self.hoyer_type == 'mean':
                             act_out += torch.mean(torch.sum(torch.abs(out), dim=(1,2,3))**2 / torch.sum((out)**2, dim=(1,2,3))).clone()
                         elif self.hoyer_type == 'sum':
@@ -594,7 +613,7 @@ class VGG_TUNABLE_THRESHOLD_tdbn(nn.Module):
                         #     act_out += torch.sum(torch.abs(out*mask)).clone()
                 out_prev = self.dropout_conv(out)
                 # threshold_out.append(hoyer_thr)
-                threshold_out.append(self.threshold['t'+str(l)])
+                self.threshold_out.append(self.threshold['t'+str(l)].clone().detach())
                 i += 1
 
         out_prev = out_prev.view(out_prev.size(0), -1)
@@ -606,20 +625,28 @@ class VGG_TUNABLE_THRESHOLD_tdbn(nn.Module):
                 out_prev = self.classifier[l](out_prev) #- getattr(self.threshold, 't'+str(prev+l))*epoch*1e-3
             
             if isinstance(self.classifier[l], (nn.ReLU)):
-                # relu
+                # 1. relu:
                 # out = self.relu(out_prev)
-                
+                # 2. x/thr -> act
                 out = out_prev/getattr(self.threshold, 't'+str(prev+l))
                 self.test_hoyer_thr[i] = self.get_hoyer_thr(out.clone().detach(), prev+l)
                 out = self.act_func(out, epoch, self.min_thr_scale[i], self.max_thr_scale[i], prev+l, self.start_spike_layer)
+
+                # 3. x/hoyer_thr -> act
+                # out = self.relu(out_prev)
+                # self.test_hoyer_thr[i] = self.get_hoyer_thr(out.clone().detach(), prev+l)
+                # # hoyer_thr = torch.mean(torch.sum((out)**2, dim=1) / torch.sum(torch.abs(out), dim=1))
+                # hoyer_thr = torch.sum((out)**2) / torch.sum(torch.abs(out))
+                # out = out/hoyer_thr
+                # out = self.act_func(out, epoch, self.min_thr_scale[i], self.max_thr_scale[i], prev+l, self.start_spike_layer)
                 
-                relu_total_num += self.num_relu(out, 0.0, 1.0, torch.max(out).clone().detach())
+                self.relu_batch_num += self.num_relu(out, 0.0, 1.0, torch.max(out).clone().detach())
                 if epoch == -1:
                     act_out[prev+l] = out.clone().detach()
                 # elif epoch == -2:
                 #     act_out[prev+l] = torch.mean(torch.sum((out)**2, dim=1) / torch.sum(torch.abs(out), dim=1)) # hoyer threshold
                 else:
-                    if torch.sum(torch.abs(out))>0 and prev+l < self.start_spike_layer:
+                    if torch.sum(torch.abs(out))>0: # and prev+l < self.start_spike_layer
                         if self.hoyer_type == 'mean':
                             act_out += (torch.mean(torch.sum(torch.abs(out), dim=1)**2 / torch.sum((out)**2, dim=1))).clone()
                         elif self.hoyer_type == 'sum':
@@ -636,12 +663,13 @@ class VGG_TUNABLE_THRESHOLD_tdbn(nn.Module):
                         
                 out_prev = self.dropout_linear(out)
                 # threshold_out.append(hoyer_thr)
-                threshold_out.append(self.threshold['t'+str(prev+l)])
+                self.threshold_out.append(self.threshold['t'+str(prev+l)].clone().detach())
                 i += 1
         # print(self.classifier[l+1])
         out = self.classifier[l+1](out_prev)
 
-        return out, threshold_out, relu_total_num, act_out #self.layer_output
+        # return out, act_out
+        return out, self.threshold_out, self.relu_batch_num, act_out #self.layer_output
         #out = self.features(x)
         #out = out.view(out.size(0), -1)
         #out = self.classifier(out)
@@ -685,27 +713,34 @@ class VGG_TUNABLE_THRESHOLD_tdbn(nn.Module):
             in_channels = 1
         else:
             in_channels = 3
-        
-        for x in cfg:
+
+        for i,x in enumerate(cfg):
             stride = 1
             
             if x == 'A':
-                #layers.pop()
-                layers += [nn.MaxPool2d(kernel_size=2, stride=2)]
+                pass
             else:
                 if self.conv_type == 'ori':
                     conv2d = nn.Conv2d(in_channels, x, kernel_size=self.kernel_size, padding=(self.kernel_size-1)//2, stride=stride, bias=True)
                 elif self.conv_type == 'dy':
                     conv2d = Dynamic_conv2d(in_channels, x, kernel_size=self.kernel_size, padding=(self.kernel_size-1)//2, bias=False)
-                layers += [conv2d,
-                        nn.BatchNorm2d(x) if self.bn_type == 'bn' else tdBatchNorm(x),
-                        # nn.BatchNorm2d(x),
-                        nn.ReLU(inplace=True)]
-                           #nn.ReLU(inplace=True)
-                           #]
+                if i+1 < len(cfg) and cfg[i+1] == 'A':
+                    if self.pool_pos == 'before_relu':
+                        layers += [conv2d,
+                                nn.MaxPool2d(kernel_size=2, stride=2),
+                                nn.BatchNorm2d(x) if self.bn_type == 'bn' else tdBatchNorm(x),
+                                nn.ReLU(inplace=True)]
+                    elif self.pool_pos == 'after_relu':
+                        layers += [conv2d,
+                                nn.BatchNorm2d(x) if self.bn_type == 'bn' else tdBatchNorm(x),
+                                nn.ReLU(inplace=True),
+                                nn.MaxPool2d(kernel_size=2, stride=2),]
+                else:
+                    layers += [conv2d,
+                            nn.BatchNorm2d(x) if self.bn_type == 'bn' else tdBatchNorm(x),
+                            nn.ReLU(inplace=True)]
                 #layers += [nn.Dropout(self.dropout)]           
                 in_channels = x
-
         
         return nn.Sequential(*layers)
 

@@ -7,7 +7,7 @@ import os
 import pickle
 import seaborn as sns
 
-output_file = 'network_output/ann_vgg16_cifar10_202206220131_test'
+output_file = 'network_output/ann_vgg16_cifar10_202206250007_test'
 # 'network_output/ann_vgg16_cifar10_202206091914_test'
 # 'network_output/ann_vgg16_cifar10_202205182136_test'
 # 'network_output/snn_vgg16_cifar10_1_202205221408_test'
@@ -43,7 +43,7 @@ def plot(mode = 'ann'):
     min = max = 0.0
     mid_hoyers = []
     for i,k in enumerate(output.keys()):
-        print('k: {}'.format(k))
+        print('k: {}, shape: {}'.format(k, output[k].shape))
         plt.subplot(4,4,i+1)
         nums = np.asarray(output[k])
         nums_batch = nums.reshape(128,-1)
@@ -96,25 +96,31 @@ def plot_hist():
     plt.figure(figsize=(32,32))
     min = max = 0.0
     mid_hoyers = []
+    # 2, 5, 9, 12, 16, 19, 22, 26, 29, 32, 36, 39, 42, 44, 46
     # bins_num = [2**(32*32), 2**(32*32), 2**(16*16), 2**(16*16), 2**(8*8), 2**(8*8), 2**(8*8), 2**(4*4), 2**(4*4), 2**(4*4), 2**(2*2), 2**(2*2), 2**(2*2)]
-    bins_num = [(32*32), (32*32), (16*16), (16*16), (8*8), (8*8), (8*8), (4*4), (4*4),(4*4), (2*2), (2*2), (2*2)]
+    bins_num = np.array([(32*32), (32*32), (16*16), (16*16), (8*8), (8*8), (8*8), (4*4), (4*4),(4*4), (2*2), (2*2), (2*2)])
+    range_num = 2**(bins_num)
+    print(range_num)
     for i,k in enumerate(output.keys()):
-        print('k: {}, shape: {}'.format(k, output[k].shape))
         plt.subplot(4,4,i+1)
         nums = np.asarray((output[k]))
+        print('shape: {}'.format(nums.shape))
         # print(nums[:,0])
         if k != 'total':
             # plt.hist(output[k], label='{}'.format(k), bins=1024)
-            
-            print('layer {}, shape: {}'.format(k, nums.shape))
-            if int(k) <= 42:
+            if int(k) <= 22:
                 sns.heatmap(nums,  cmap="YlGnBu")
+            elif int(k) <= 42:
+
+                plt.hist(nums, label='{}'.format(k), bins=128)
+                # plt.yscale('log') range=(1,range_num[i])
+                plt.legend()
             else:
-                plt.hist(nums, label='{}'.format(k), bins=1024)
-                plt.yscale('log')
+                plt.hist(nums, label='{}'.format(k), bins=128)
+                # plt.yscale('log')
                 plt.legend()
             
-    plt.savefig(output_file[:-4] + '_v2.jpg')
+    plt.savefig(output_file[:-4] + '_v3.jpg')
     # torch.save(mid_hoyers, 'network_output/my_x_scale_factor_1753')
 
 if __name__ == '__main__':

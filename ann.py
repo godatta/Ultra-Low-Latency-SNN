@@ -221,12 +221,12 @@ def test(epoch, loader):
         correct = 0
         #dis = []
         total_output = {}
+        plot_output = {}
         global max_accuracy, start_time
             
         relu_total_num = torch.tensor([0.0, 0.0, 0.0, 0.0])
         test_hoyer_thr = torch.tensor([0.0]*15)
         for batch_idx, (data, target) in enumerate(loader):
-                        
             if torch.cuda.is_available() and args.gpu:
                 data, target = data.cuda(), target.cuda()
             
@@ -241,7 +241,7 @@ def test(epoch, loader):
                         total_output[l] = torch.tensor([])
                     total_output[l] = torch.cat((total_output[l], act_out[l].cpu()))
 
-            elif test_only and batch_idx == 0 and epoch == 1:
+            elif test_only and batch_idx <= 0 and epoch == 1:
                 output, thresholds, relu_batch_num, act_out = model(data, -1)
                 # act_reg = 0.0
                 res = {}
@@ -250,30 +250,38 @@ def test(epoch, loader):
                     # act_reg += (torch.sum(torch.abs(act_out[l]))**2 / torch.sum((act_out[l])**2))
                     if test_type == 'v2' and len(act_out[l].shape) == 4:
                         N,C,W,H = act_out[l].shape
-                        # index_M = 2**(torch.arange(1, W*H+1).reshape(W,H).cuda())
-                        act_out[l][act_out[l]>0] = 1.0
-                        # print('act_out sum: {}, nums: {}'.format(torch.sum(act_out[l]), torch.count_nonzero(act_out[l])))
-                        # act_out[l] = act_out[l]*index_M
-                        # act_out[l] = torch.sum(act_out[l], dim=(2,3))
-                        res[l] = torch.sum(act_out[l], dim=(0)).cpu()
-                        print('res shape: {}'.format(res[l].shape))
-                        res[l] = res[l][0]
-
+                        # if overflow, output heatmap
+                        if W >= 8:
+                            res[l] = torch.sum(act_out[l], dim=(0)).cpu()
+                            res[l] = res[l][0]
+                            plot_output[l] = plot_output.get(l, 0.0) + res[l]
+                        # if not overflow, output histgram
+                        else:
+                            index_M = 2**(torch.arange(0, W*H).reshape(W,H).cuda())
+                            act_out[l][act_out[l]>0] = 1.0
+                            # print('act_out sum: {}, nums: {}'.format(torch.sum(act_out[l]), torch.count_nonzero(act_out[l])))
+                            act_out[l] = act_out[l]*index_M
+                            res[l] = torch.sum(act_out[l], dim=(2,3))
+                            print(f'before res: {res[l].shape}')
+                            res[l] = res[l][:,0].view(-1).cpu()
+                            print(f'after res: {res[l].shape}')
+                            plot_output[l] = torch.cat((plot_output.get(l, torch.tensor([])), res[l]))
                     elif test_type == 'v2' and len(act_out[l].shape) == 2:
-                        # N,D = act_out[l].shape
+                        N,D = act_out[l].shape
                         act_out[l][act_out[l]>0] = 1
-                        # index_M = 2**(torch.arange(1,D+1).cuda())
-                        # # print('act_out sum: {}, nums: {}'.format(torch.sum(act_out[l]), torch.count_nonzero(act_out[l])))
+                        index_M = (torch.arange(1,D+1.).cuda())
                         # act_out[l] = act_out[l]*index_M
-                        res[l] = torch.sum(act_out[l], dim=(0)).cpu()
-                        print('res shape: {}'.format(res[l].shape))
+                        # print(torch.sum(index_M))
+                        # print(torch.sum(act_out[l], dim=1))
+                        # res[l] = torch.sum(act_out[l], dim=1).cpu()
+                        res[l] = (act_out[l]@index_M).cpu()
+                        plot_output[l] = torch.cat((plot_output.get(l, torch.tensor([])), res[l]))
                     else:
                         total_net_output = torch.cat((total_net_output, act_out[l].view(-1).cpu()))
                         res[l] =  act_out[l].view(-1).cpu().numpy()
-                    # res[l] =  act_out[l].cpu().numpy()
-                        
+                                          
                     # writer.add_histogram(f'Dist/layer {l} distribution', act_out[l].view(-1).cpu().numpy())
-                    f.write(f'\nlayer {l} shape: {act_out[l].shape}, net_output: {total_net_output.shape}')
+                    # f.write(f'\nlayer {l} shape: {act_out[l].shape}, output shape: {res[l].shape}, plot out shape: {plot_output[l].shape}')
 
                 res['total'] = total_net_output.view(-1).cpu().numpy()
                 # writer.add_histogram('Dist/output distribution', total_net_output.view(-1).cpu().numpy())
@@ -329,6 +337,8 @@ def test(epoch, loader):
         #    f.write('\n Quitting as the training is not progressing')
         #    exit(0)
         final_avg = np.array([(p.data)/(batch_idx+1) for p in test_hoyer_thr])
+        if test_only and test_type == 'v2':
+            torch.save(plot_output, 'network_output/'+identifier+'_v2')
         if get_scale:
             torch.save(hoyer_thr_per_batch, 'output/my_hoyer_x_scale_factor')
             torch.save(final_avg, 'output/my_hoyer_x_scale_factor_final_avg')
@@ -430,6 +440,7 @@ if __name__ == '__main__':
     parser.add_argument('--conv_type',              default='ori',              type=str,       help='ori: original conv, dy: dynamic conv,')
     parser.add_argument('--test_type',              default='v1',               type=str,       help='v1: dist of the output of every layer, v2: visualize the hist of every activation map,')
     parser.add_argument('--use_wandb',              action='store_true',                        help='if use wandb to record exps')
+    parser.add_argument('--pool_pos',               default='before_relu',      type=str,       help='before_relu, after_relu')
 
     args=parser.parse_args()
 
@@ -479,6 +490,7 @@ if __name__ == '__main__':
     conv_type       = args.conv_type
     test_type       = args.test_type
     use_wandb       = args.use_wandb
+    pool_pos        = args.pool_pos
 
     values = lr_interval_arg.split()
     lr_interval = []
@@ -580,8 +592,10 @@ if __name__ == '__main__':
     
     if architecture[0:3].lower() == 'vgg':
         # act_type == 'tdbn'
-        model = VGG_TUNABLE_THRESHOLD_tdbn(vgg_name=architecture, labels=labels, dataset=dataset, kernel_size=kernel_size, linear_dropout=linear_dropout, conv_dropout = conv_dropout, default_threshold=threshold,\
-            net_mode=net_mode, hoyer_type=hoyer_type, act_mode=act_mode, bn_type=bn_type, start_spike_layer=start_spike_layer, conv_type=conv_type)
+        model = VGG_TUNABLE_THRESHOLD_tdbn(vgg_name=architecture, labels=labels, dataset=dataset, kernel_size=kernel_size,\
+            linear_dropout=linear_dropout, conv_dropout = conv_dropout, default_threshold=threshold,\
+            net_mode=net_mode, hoyer_type=hoyer_type, act_mode=act_mode, bn_type=bn_type, start_spike_layer=start_spike_layer,\
+            conv_type=conv_type, pool_pos=pool_pos)
 
     elif architecture[0:3].lower() == 'res':
         if architecture.lower() == 'resnet12':
