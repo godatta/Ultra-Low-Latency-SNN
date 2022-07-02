@@ -7,7 +7,7 @@ import os
 import pickle
 import seaborn as sns
 
-output_file = 'network_output/ann_vgg16_cifar10_202206250007_test'
+output_file = 'network_output/ann_vgg16_cifar10_202206250007_test_v2'
 # 'network_output/ann_vgg16_cifar10_202206091914_test'
 # 'network_output/ann_vgg16_cifar10_202205182136_test'
 # 'network_output/snn_vgg16_cifar10_1_202205221408_test'
@@ -91,7 +91,7 @@ def plot(mode = 'ann'):
     plt.savefig(output_file[:-4] + '.jpg')
     # torch.save(mid_hoyers, 'network_output/my_x_scale_factor_1753')
 
-def plot_hist():  
+def plot_heatmap():  
     output = torch.load(output_file)
     plt.figure(figsize=(32,32))
     min = max = 0.0
@@ -108,22 +108,22 @@ def plot_hist():
         # print(nums[:,0])
         if k != 'total':
             # plt.hist(output[k], label='{}'.format(k), bins=1024)
-            if int(k) <= 22:
+            if int(k) <= 42:
                 sns.heatmap(nums,  cmap="YlGnBu")
-            elif int(k) <= 42:
+            # elif int(k) <= 42:
 
-                plt.hist(nums, label='{}'.format(k), bins=128)
-                # plt.yscale('log') range=(1,range_num[i])
-                plt.legend()
+            #     plt.hist(nums, label='{}'.format(k), bins=128)
+            #     # plt.yscale('log') range=(1,range_num[i])
+            #     plt.legend()
             else:
-                plt.hist(nums, label='{}'.format(k), bins=128)
-                # plt.yscale('log')
+                plt.hist(nums, label='{}'.format(k), bins=4096)
+                plt.yscale('log')
                 plt.legend()
             
-    plt.savefig(output_file[:-4] + '_v3.jpg')
+    plt.savefig(output_file[:-4] + '_heatmap.jpg')
     # torch.save(mid_hoyers, 'network_output/my_x_scale_factor_1753')
 
 if __name__ == '__main__':
-    # plot_hist()
-    plot()
+    plot_heatmap()
+    # plot()
     # plot('snn')
