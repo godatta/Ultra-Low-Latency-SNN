@@ -3,8 +3,8 @@ python ann.py --dataset CIFAR10 --batch_size 128 --architecture VGG16 \
 --optimizer Adam --devices 0 --relu_threshold 1.0 \
 --momentum 0.95 --weight_decay 0.0005 --seed 0 --test_only --linear_dropout 0.1 --conv_dropout 0.1 \
 --hoyer_decay 1e-8 --net_mode 'ori' --pool_pos 'before_relu' --test_type 'v1' \
---act_mode 'cw' --bn_type 'bn' --start_spike_layer 50 --hoyer_type 'sum' --x_thr_scale 1.0 \
---pretrained_ann 'trained_models_ann/ann_vgg16_cifar10_202207020204.pth'
+--act_mode 'cw' --bn_type 'bn' --start_spike_layer 46 --hoyer_type 'sum' --x_thr_scale 1.0 \
+--pretrained_ann 'trained_models_ann/ann_vgg16_cifar10_202207021255.pth'
 # 93.92 
 # 'trained_models_ann/ann_vgg16_cifar10_202206241620.pth'
 # 93.82
