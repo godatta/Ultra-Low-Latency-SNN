@@ -5,8 +5,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 import pdb
 import math
+import numpy as np
 from models.dynamic_conv import Dynamic_conv2d
-from models.self_modules import HoyerBiAct, tdBatchNorm, ThrBiAct, SubBiAct
+from models.self_modules import HoyerBiAct, tdBatchNorm, ThrBiAct, SubBiAct, HardBinaryConv, hardBinaryConvForward, FakeQuantize
 # from dynamic_conv import Dynamic_conv2d
 
 
@@ -24,7 +25,7 @@ cfg = {
 class VGG_TUNABLE_THRESHOLD_tdbn(nn.Module):
     def __init__(self, vgg_name='VGG16', labels=10, dataset = 'CIFAR10', kernel_size=3, linear_dropout=0.1, conv_dropout=0.1, default_threshold=1.0, \
         net_mode='ori', hoyer_type='mean', act_mode = 'mean', bn_type='bn', start_spike_layer=50, conv_type='ori', pool_pos='after_relu', sub_act_mask=False, \
-        x_thr_scale=1.0, pooling_type='max'):
+        x_thr_scale=1.0, pooling_type='max', weight_quantize=1, im_size=224):
         super(VGG_TUNABLE_THRESHOLD_tdbn, self).__init__()
         
         self.dataset        = dataset
@@ -37,6 +38,7 @@ class VGG_TUNABLE_THRESHOLD_tdbn(nn.Module):
         self.hoyer_type     = hoyer_type
         self.start_spike_layer = start_spike_layer
         self.x_thr_scale    = x_thr_scale
+        self.weight_quantize= weight_quantize
         self.pooling        = nn.MaxPool2d(kernel_size=2, stride=2) if pooling_type == 'max' else nn.AvgPool2d(kernel_size=2, stride=2)
         self.features       = self._make_layers(cfg[vgg_name])
         self.dropout_conv   = nn.Dropout(conv_dropout)
@@ -92,21 +94,30 @@ class VGG_TUNABLE_THRESHOLD_tdbn(nn.Module):
                             #nn.Dropout(0.5),
                             nn.Linear(1024, labels, bias=False)
                             )
+        elif vgg_name!='VGG6' and dataset=='IMAGENET':
+            self.classifier = nn.Sequential(
+                            nn.Linear((im_size//32)**2*512, 4096, bias=False),
+                            # nn.Linear(512*7*7, 4096, bias=False),
+                            HoyerBiAct(hoyer_type='sum'),
+                            nn.Linear(4096, 4096, bias=False),
+                            HoyerBiAct(hoyer_type='sum'),
+                            nn.Linear(4096, labels, bias=False)
+            )
         elif vgg_name!='VGG6' and dataset!='MNIST':
             self.classifier = nn.Sequential(
-                            nn.Linear(2048, 4096, bias=True),
+                            nn.Linear(2048, 4096, bias=False),
                             # SubBiAct(act_mode=self.act_mode, bit=1, act_size=(4096)) if self.sub_act_mask else ThrBiAct(act_mode=self.act_mode) ,
                             HoyerBiAct(hoyer_type='sum'),
                             # ThrBiAct(act_mode=self.act_mode) ,
                             # nn.ReLU(inplace=True),
                             #nn.Dropout(0.5),
-                            nn.Linear(4096, 4096, bias=True),
+                            nn.Linear(4096, 4096, bias=False),
                             # SubBiAct(act_mode=self.act_mode, bit=1, act_size=(4096)) if self.sub_act_mask else ThrBiAct(act_mode=self.act_mode) ,
                             # ThrBiAct(act_mode=self.act_mode) ,
                             HoyerBiAct(hoyer_type='sum'),
                             # nn.ReLU(inplace=True),
                             #nn.Dropout(0.5),
-                            nn.Linear(4096, labels, bias=True)
+                            nn.Linear(4096, labels, bias=False)
                             )
         elif vgg_name == 'VGG6' and dataset == 'MNIST':
             self.classifier = nn.Sequential(
@@ -207,10 +218,17 @@ class VGG_TUNABLE_THRESHOLD_tdbn(nn.Module):
             act_out = 0.0
         i = 0
         for l in range(len(self.features)):
-            if isinstance(self.features[l], (nn.Conv2d, nn.MaxPool2d, Dynamic_conv2d, nn.AvgPool2d)):
+            if isinstance(self.features[l], nn.Conv2d):
+                # out_prev = hardBinaryConvForward(out_prev, self.features[l])
+                if self.weight_quantize == 0:
+                    out_prev = self.features[l](out_prev)
+                else:
+                    out_prev = F.conv2d(out_prev, FakeQuantize.apply(self.features[l].weight, self.weight_quantize), stride=1, padding=1)
+                    # out_prev = self.features[l](out_prev)
+            elif isinstance(self.features[l], (nn.MaxPool2d, Dynamic_conv2d, nn.AvgPool2d, HardBinaryConv)):
                 # print('layer: {}, shape: {}'.format(l, out_prev.shape))
                 out_prev = self.features[l](out_prev)
-            if isinstance(self.features[l], (nn.BatchNorm2d)):
+            elif isinstance(self.features[l], (nn.BatchNorm2d)):
                 # out_prev = self.features[l](out_prev)
                 if self.bn_type == 'bn':
                     out_prev = self.features[l](out_prev)
@@ -218,7 +236,7 @@ class VGG_TUNABLE_THRESHOLD_tdbn(nn.Module):
                     out_prev = self.features[l](out_prev, getattr(self.threshold, 't'+str(l+1)))
                 elif self.bn_type == 'fake':
                     out_prev = self.features[l](out_prev, 0.25)
-            if isinstance(self.features[l], (ThrBiAct, SubBiAct, HoyerBiAct)):
+            elif isinstance(self.features[l], (ThrBiAct, SubBiAct, HoyerBiAct)):
                 # print('{}, shape: {}'.format(l, out_prev.shape))
                 # 1. relu:
                 # out = self.relu(out_prev)
@@ -226,7 +244,7 @@ class VGG_TUNABLE_THRESHOLD_tdbn(nn.Module):
                 # out = out_prev
                 out = out_prev/getattr(self.threshold, 't'+str(l))
                 # out = out_prev/torch.abs(getattr(self.threshold, 't'+str(l)))
-                self.test_hoyer_thr[i] = self.get_hoyer_thr(out.clone().detach(), l)
+                # self.test_hoyer_thr[i] = self.get_hoyer_thr(out.clone().detach(), l)
                 out = self.features[l](out, epoch, self.min_thr_scale[i], self.max_thr_scale[i], self.x_thr_scale, l, self.start_spike_layer)
 
                 # 3. x/hoyer_thr -> act
@@ -264,6 +282,11 @@ class VGG_TUNABLE_THRESHOLD_tdbn(nn.Module):
                             act_out += torch.mean(torch.sum(torch.abs(out), dim=(1,2,3))**2 / torch.sum((out)**2, dim=(1,2,3))).clone()
                         elif self.hoyer_type == 'sum':
                             act_out +=  (torch.sum(torch.abs(out))**2 / torch.sum((out)**2)).clone()
+                        elif self.hoyer_type == 'cw':
+                            hoyer_thr = torch.sum((out)**2, dim=(0,2,3)) / torch.sum(torch.abs(out), dim=(0,2,3))
+                            # 1.0 is the max thr
+                            hoyer_thr = torch.nan_to_num(hoyer_thr, nan=1.0)
+                            act_out += torch.mean(hoyer_thr)
                         # elif self.hoyer_type == 'mask':
                         #     mask = torch.zeros_like(out).cuda()
                         #     mask[out<torch.max(out).clone().detach()] = 1.0
@@ -293,7 +316,7 @@ class VGG_TUNABLE_THRESHOLD_tdbn(nn.Module):
                 # out = out_prev
                 out = out_prev/getattr(self.threshold, 't'+str(prev+l))
                 # out = out_prev/torch.abs(getattr(self.threshold, 't'+str(prev+l)))
-                self.test_hoyer_thr[i] = self.get_hoyer_thr(out.clone().detach(), prev+l)
+                # self.test_hoyer_thr[i] = self.get_hoyer_thr(out.clone().detach(), prev+l)
                 out = self.classifier[l](out, epoch, self.min_thr_scale[i], self.max_thr_scale[i], self.x_thr_scale, prev+l, self.start_spike_layer)
 
                 # 3. x/hoyer_thr -> act
@@ -321,7 +344,7 @@ class VGG_TUNABLE_THRESHOLD_tdbn(nn.Module):
                     if torch.sum(torch.abs(out))>0: # and prev+l < self.start_spike_layer
                         if self.hoyer_type == 'mean':
                             act_out += (torch.mean(torch.sum(torch.abs(out), dim=1)**2 / torch.sum((out)**2, dim=1))).clone()
-                        elif self.hoyer_type == 'sum':
+                        elif self.hoyer_type == 'sum' or self.hoyer_type == 'cw':
                             act_out +=  (torch.sum(torch.abs(out))**2 / torch.sum((out)**2)).clone()
                         # elif self.hoyer_type == 'mask':
                         #     mask = torch.zeros_like(out).cuda()
@@ -393,12 +416,13 @@ class VGG_TUNABLE_THRESHOLD_tdbn(nn.Module):
             
             if x == 'A':
                 pass
-            else:
+            else: 
                 if self.conv_type == 'ori':
-                    conv2d = nn.Conv2d(in_channels, x, kernel_size=self.kernel_size, padding=(self.kernel_size-1)//2, stride=stride, bias=True)
+                    conv2d = nn.Conv2d(in_channels, x, kernel_size=self.kernel_size, padding=(self.kernel_size-1)//2, stride=stride, bias=False)
                 elif self.conv_type == 'dy':
                     conv2d = Dynamic_conv2d(in_channels, x, kernel_size=self.kernel_size, padding=(self.kernel_size-1)//2, bias=False)
-                
+                # if self.weight_quantize == 1:
+                #     conv2d = HardBinaryConv(in_channels, x, kernel_size=self.kernel_size, padding=(self.kernel_size-1)//2, stride=stride)
                 # elif self.conv_type == 'biconv':
                 # if index >= 12:
                 #     print(index)
@@ -430,8 +454,40 @@ class VGG_TUNABLE_THRESHOLD_tdbn(nn.Module):
                             ]
                 #layers += [nn.Dropout(self.dropout)]           
                 in_channels = x
-        
+        if self.dataset == 'IMAGENET':
+            layers.pop()
+            layers.pop()
+
+            layers += [self.pooling, 
+                    nn.BatchNorm2d(x) if self.bn_type == 'bn' else tdBatchNorm(x),
+                    HoyerBiAct(num_features=x, hoyer_type=self.act_mode)]
         return nn.Sequential(*layers)
+
+def model_equivalence(model_1,
+                      model_2,
+                      device,
+                      rtol=1e-05,
+                      atol=1e-08,
+                      num_tests=100,
+                      input_size=(1, 3, 32, 32)):
+
+    model_1.to(device)
+    model_2.to(device)
+
+    for _ in range(num_tests):
+        x = torch.rand(size=input_size).to(device)
+        y1,_,_,_ = model_1(x)
+        y1 = y1.detach().cpu().numpy()
+        y2,_,_,_ = model_2(x)
+        y2 = y2.detach().cpu().numpy()
+        if np.allclose(a=y1, b=y2, rtol=rtol, atol=atol,
+                       equal_nan=False) == False:
+            print("Model equivalence test sample failed: ")
+            print(y1)
+            print(y2)
+            return False
+
+    return True
 
 def test():
     net = VGG_TUNABLE_THRESHOLD_tdbn(act_mode='cw', conv_type='ori', start_spike_layer=0).cuda()

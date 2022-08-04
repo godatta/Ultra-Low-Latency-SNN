@@ -1,11 +1,9 @@
 import argparse
 from operator import ge
-from models.vgg_tunable_threshold import VGG_TUNABLE_THRESHOLD
-from models.vgg_tunable_threshold_relu import VGG_TUNABLE_THR_ReLU
-from models.vgg_tunable_threshold_v3 import VGG_TUNABLE_THRESHOLD_v3
 from models.vgg_tunable_threshold_tdbn import VGG_TUNABLE_THRESHOLD_tdbn
-from models.vgg import VGG
-from models.resnet_tunable_threshold import *
+# from models.vgg import VGG
+# from models.resnet_tunable_threshold import *
+from models.birealnet import birealnet18,birealnet34
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -150,20 +148,20 @@ def train(epoch, loader):
         relu_total_num += model.module.relu_batch_num
         # torch.cuda.empty_cache()
         if epoch == 1 and batch_idx < 5:
-            f.write('\nbatch: {}, train_loss: {:.4f}, act_loss: {:.4f}, thr_loss: {:.4f} total_train_loss: {:.4f} '.format(
+            f.write('\nbatch: {}, train_loss: {:.4f}, act_loss: {:.4f}, thr_loss: {:.4f} total_train_loss: {:.4f} train_acc: {:.4f}, '.format(
             batch_idx,
             losses.avg,
             act_losses.avg,
             thr_losses.avg,
             total_losses.avg,
-            ))
-            f.write('train_acc: {:.4f}, output 0: {:.2f}%, relu: {:.2f}%, output threshold: {:.2f}%, time: {}'.format(
             top1.avg,
-            relu_total_num[0]/relu_total_num[-1]*100,
-            relu_total_num[1]/relu_total_num[-1]*100,
-            relu_total_num[2]/relu_total_num[-1]*100,
-            datetime.timedelta(seconds=(datetime.datetime.now() - start_time).seconds)
             ))
+            # f.write('output 0: {:.2f}%, relu: {:.2f}%, output threshold: {:.2f}%, '.format(
+            # relu_total_num[0]/relu_total_num[-1]*100,
+            # relu_total_num[1]/relu_total_num[-1]*100,
+            # relu_total_num[2]/relu_total_num[-1]*100,
+            # ))
+            f.write('time: {}'.format(datetime.timedelta(seconds=(datetime.datetime.now() - start_time).seconds)))
   
     # writer.add_scalars('Loss/train', {
     #     'loss': losses.avg,
@@ -176,34 +174,35 @@ def train(epoch, loader):
     # writer.add_scalar('Relu/between_0_thr', relu_total_num[1]/relu_total_num[-1]*100, epoch)
     # writer.add_scalar('Relu/laeger_eq_thr', relu_total_num[2]/relu_total_num[-1]*100, epoch)
     if local_rank == 0:
-        wandb.log({
-            'loss': losses.avg,
-            'loss_act': act_losses.avg,
-            'loss_thr': thr_losses.avg,
-            'total_loss': total_losses.avg
-        }, step=epoch)
-        wandb.log({'training_acc': top1.avg}, step=epoch)
-        wandb.log({'Relu_less_eq_0': relu_total_num[0]/relu_total_num[-1]*100}, step=epoch)
-        wandb.log({'Relu_between_0_thr': relu_total_num[1]/relu_total_num[-1]*100}, step=epoch)
-        wandb.log({'Relu_laeger_eq_thr': relu_total_num[2]/relu_total_num[-1]*100}, step=epoch)
-        f.write('\n The threshold in ann is: {}'.format([p.data for p in model.module.threshold_out]))
-        f.write('\nEpoch: {}, lr: {:.1e}, train_loss: {:.4f}, act_loss: {:.4f}, thr_loss: {:.4f} total_train_loss: {:.4f} '.format(
+        if use_wandb:
+            wandb.log({
+                'loss': losses.avg,
+                'loss_act': act_losses.avg,
+                'loss_thr': thr_losses.avg,
+                'total_loss': total_losses.avg
+            }, step=epoch)
+            wandb.log({'training_acc': top1.avg}, step=epoch)
+            # wandb.log({'Relu_less_eq_0': relu_total_num[0]/relu_total_num[-1]*100}, step=epoch)
+            # wandb.log({'Relu_between_0_thr': relu_total_num[1]/relu_total_num[-1]*100}, step=epoch)
+        # wandb.log({'Relu_laeger_eq_thr': relu_total_num[2]/relu_total_num[-1]*100}, step=epoch)
+        # f.write('\n The threshold in ann is: {}'.format([p.data for p in model.module.threshold_out]))
+        f.write('\nEpoch: {}, lr: {:.1e}, train_loss: {:.4f}, act_loss: {:.4f}, thr_loss: {:.4f} total_train_loss: {:.4f} train_acc: {:.4f}, '.format(
                 epoch,
                 learning_rate,
                 losses.avg,
                 act_losses.avg,
                 thr_losses.avg,
                 total_losses.avg,
-                )
-            )
-        f.write('train_acc: {:.4f}, output 0: {:.2f}%, relu: {:.2f}%, output threshold: {:.2f}%, time: {}'.format(
                 top1.avg,
-                relu_total_num[0]/relu_total_num[-1]*100,
-                relu_total_num[1]/relu_total_num[-1]*100,
-                relu_total_num[2]/relu_total_num[-1]*100,
-                datetime.timedelta(seconds=(datetime.datetime.now() - start_time).seconds)
                 )
             )
+        # f.write('output 0: {:.2f}%, relu: {:.2f}%, output threshold: {:.2f}%, '.format(
+        #         relu_total_num[0]/relu_total_num[-1]*100,
+        #         relu_total_num[1]/relu_total_num[-1]*100,
+        #         relu_total_num[2]/relu_total_num[-1]*100,
+        #         )
+        #     )
+        f.write('time: {}'.format(datetime.timedelta(seconds=(datetime.datetime.now() - start_time).seconds)))
 
 def test(epoch, loader):
 
@@ -312,7 +311,7 @@ def test(epoch, loader):
             for k in hoyer_thrs.keys():
                 hoyer_dict[k] = hoyer_thrs[k].avg
             torch.save(hoyer_dict, 'output/my_hoyer_x_scale_factor')
-        if not test_only:
+        if not test_only and use_wandb:
             wandb.log({'test_acc': top1.avg}, step=epoch)
         # writer.add_scalar('Accuracy/test', top1.avg, epoch)
         if (top1.avg>=max_accuracy) and top1.avg>0.88:
@@ -335,23 +334,23 @@ def test(epoch, loader):
             if not args.dont_save and not test_only:
                 torch.save(state,filename)
         #dis = np.array(dis)
-        f.write('\nEpoch: {}, best: {:.4f}, test_loss: {:.4f}, act_loss: {:.4f}, thr_loss: {:.4f}, total_test_loss: {:.4f}, '.format(
+        f.write('\nEpoch: {}, best: {:.4f}, test_loss: {:.4f}, act_loss: {:.4f}, thr_loss: {:.4f}, total_test_loss: {:.4f}, test_acc: {:.4f},'.format(
             epoch,
             max_accuracy,
             losses.avg,
             act_losses.avg,
             thr_losses.avg,
             total_losses.avg,
-            )
-        )
-        f.write('test_acc: {:.4f}, output 0: {:.2f}%, relu: {:.2f}%, output threshold: {:.2f}%, time: {}\n'.format(
             top1.avg,
-            relu_total_num[0]/relu_total_num[-1]*100,
-            relu_total_num[1]/relu_total_num[-1]*100,
-            relu_total_num[2]/relu_total_num[-1]*100,
-            datetime.timedelta(seconds=(datetime.datetime.now() - start_time).seconds)
             )
         )
+        # f.write(' output 0: {:.2f}%, relu: {:.2f}%, output threshold: {:.2f}%, '.format(
+        #     relu_total_num[0]/relu_total_num[-1]*100,
+        #     relu_total_num[1]/relu_total_num[-1]*100,
+        #     relu_total_num[2]/relu_total_num[-1]*100,
+        #     )
+        # )
+        f.write('time: {}\n'.format(datetime.timedelta(seconds=(datetime.datetime.now() - start_time).seconds)))
 
         # f.write('\n Time: {}'.format(
         #     datetime.timedelta(seconds=(datetime.datetime.now() - current_time).seconds)
@@ -381,7 +380,7 @@ if __name__ == '__main__':
     parser.add_argument('--batch_size',             default=64,                 type=int,       help='minibatch size')
 
 
-    parser.add_argument('-a','--architecture',      default='VGG16',            type=str,       help='network architecture', choices=['VGG4','VGG6','VGG9','VGG11','VGG13','VGG16','VGG19','RESNET12','RESNET20','RESNET34'])
+    parser.add_argument('-a','--architecture',      default='VGG16',            type=str,       help='network architecture', choices=['VGG4','VGG6','VGG9','VGG11','VGG13','VGG16','VGG19','RESNET12', 'RESNET18','RESNET20','RESNET34'])
     parser.add_argument('-rthr','--relu_threshold', default=0.5,                type=float,     help='threshold value for the RELU activation')
     parser.add_argument('--pretrained_ann',         default='',                 type=str,       help='pretrained model to initialize ANN')
     parser.add_argument('--epochs',                 default=300,                type=int,       help='number of training epochs')
@@ -404,6 +403,7 @@ if __name__ == '__main__':
     parser.add_argument('--start_spike_layer',      default=20,                 type=int,       help='start_spike_layer')
     parser.add_argument('--bn_type',                default='bn',               type=str,       help='bn:, tdbn:,')
     parser.add_argument('--conv_type',              default='ori',              type=str,       help='ori:, dy:,')
+    parser.add_argument('--use_wandb',              action='store_true',                        help='if use wandb to record exps')
 
     parser.add_argument('--nodes',                  default=1,                  type=int,       help='nodes')
     parser.add_argument('--gpu_nums',               default=4,                  type=int,       help='nodes')
@@ -464,6 +464,7 @@ if __name__ == '__main__':
     start_spike_layer = args.start_spike_layer
     bn_type         = args.bn_type
     conv_type       = args.conv_type
+    use_wandb       = args.use_wandb
 
     values = lr_interval_arg.split()
     lr_interval = []
@@ -579,12 +580,13 @@ if __name__ == '__main__':
                 net_mode=net_mode, hoyer_type=hoyer_type, act_mode=act_mode, bn_type=bn_type, start_spike_layer=start_spike_layer, conv_type=conv_type)
 
     elif architecture[0:3].lower() == 'res':
-        if architecture.lower() == 'resnet12':
-            model = ResNet12(labels=labels, dropout=dropout, default_threshold=threshold)
-        elif architecture.lower() == 'resnet20':
-            model = ResNet20(labels=labels, dropout=dropout, default_threshold=threshold)
-        elif architecture.lower() == 'resnet34':
-            model = ResNet34(labels=labels, dropout=dropout, default_threshold=threshold) 
+        model = birealnet18(num_classes=10)
+        # if architecture.lower() == 'resnet12':
+        #     model = ResNet12(labels=labels, dropout=dropout, default_threshold=threshold)
+        # elif architecture.lower() == 'resnet20':
+        #     model = ResNet20(labels=labels, dropout=dropout, default_threshold=threshold)
+        # elif architecture.lower() == 'resnet34':
+        #     model = ResNet34(labels=labels, dropout=dropout, default_threshold=threshold) 
     f.write('\n{}'.format(model))
     
     #CIFAR100 sometimes has problem to start training
@@ -654,7 +656,7 @@ if __name__ == '__main__':
     # tensorboard_log_name = 'runs/' + identifier
     # writer = SummaryWriter(tensorboard_log_name)
     # f.write(f'tensorboead log file is saved at {tensorboard_log_name}')
-    if not test_only and local_rank == 0:
+    if not test_only and local_rank == 0 and use_wandb:
         dir = os.path.join('wandb', identifier)
         try:
             os.mkdir(dir)

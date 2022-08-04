@@ -3,6 +3,7 @@ from typing import Optional, Any
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.autograd import Function
 import pdb
 import math
 
@@ -23,6 +24,7 @@ class HoyerBiAct(nn.Module):
     momentum: float
     hoyer_type: str
     track_running_stats: bool
+    # hoyer_type is args.act_mode
     def __init__(self, num_features=1, eps=1e-05, momentum=0.1, hoyer_type='sum',track_running_stats: bool = True, device=None, dtype=None):
         factory_kwargs = {'device': device, 'dtype': dtype}
         super(HoyerBiAct, self).__init__()
@@ -33,7 +35,7 @@ class HoyerBiAct(nn.Module):
         self.track_running_stats = track_running_stats
         # self.running_hoyer_thr = 0.0 if hoyer_type != 'cw' else torch.zeros(num_features).cuda()
         if self.track_running_stats:
-            self.register_buffer('running_hoyer_thr', torch.zeros(num_features, **factory_kwargs))
+            self.register_buffer('running_hoyer_thr', torch.zeros(self.num_features, **factory_kwargs))
             self.running_hoyer_thr: Optional[torch.Tensor]
             self.register_buffer('num_batches_tracked',
                                  torch.tensor(0, dtype=torch.long,
@@ -84,8 +86,9 @@ class HoyerBiAct(nn.Module):
             #     hoyer_thr =torch.sum((clamped_input)**2, dim=(0,2,3)) / torch.sum(torch.abs(clamped_input), dim=(0,2,3))
             # print('running_hoyer_thr: {}'.format(self.running_hoyer_thr))
             
-
-        input = Spike_func.apply(input, hoyer_thr, x_thr_scale, self.hoyer_type, (layer_index>=13 and layer_index<=39))
+        # 
+        input = Spike_func.apply(input, hoyer_thr, x_thr_scale, self.hoyer_type, layer_index>=start_spike_layer)
+        # input = Spike_func.apply(input, hoyer_thr, x_thr_scale, self.hoyer_type, (layer_index>=13 and layer_index<=39))
         return input
 
     def extra_repr(self):
@@ -137,14 +140,19 @@ class Spike_func(torch.autograd.Function):
         #     hoyer_thr = torch.sum((out)**2) / torch.sum(torch.abs(out))
         # else:
         #     hoyer_thr = 1.0
+        ctx.if_spike = if_spike
+        # print('input shape: {}, hoyer thr shape: {}, x_thr_scale: {}'.format(input.shape, hoyer_thr, x_thr_scale))
         if hoyer_type != 'cw':
             if if_spike:
                 out[out < x_thr_scale*hoyer_thr] = 0.0
+            # print('out shape: {}, x scale: {}, hoyer_thr: {}'.format(out.shape, x_thr_scale, hoyer_thr))
             out[out >= x_thr_scale*hoyer_thr] = 1.0
         else:
             if if_spike:
                 out[out<x_thr_scale*hoyer_thr[None, :, None, None]] = 0.0
             out[out>=x_thr_scale*hoyer_thr[None, :, None, None]] = 1.0 
+            # out[out<0.1*x_thr_scale*hoyer_thr[None, :, None, None]] = 0.0
+            # out[out>=0.9*x_thr_scale*hoyer_thr[None, :, None, None]] = 1.0 
                     
         return out
 
@@ -156,11 +164,82 @@ class Spike_func(torch.autograd.Function):
         grad_inp = torch.zeros_like(input).cuda()
 
         grad_inp[input > 0] = 1.0
+        # only for
         grad_inp[input > 2.0] = 0.0
+
+        grad_scale = 0.5 if ctx.if_spike else 1.0
     
 
-        return grad_inp*grad_input, None, None, None, None  
+        return grad_scale*grad_inp*grad_input, None, None, None, None  
 
+class HardBinaryConv(nn.Module):
+    def __init__(self, in_chn, out_chn, kernel_size=3, stride=1, padding=1):
+        super(HardBinaryConv, self).__init__()
+        self.stride = stride
+        self.padding = padding
+        self.number_of_weights = in_chn * out_chn * kernel_size * kernel_size
+        self.shape = (out_chn, in_chn, kernel_size, kernel_size)
+        # self.weight = nn.Parameter(torch.rand((self.number_of_weights,1)) * 0.001, requires_grad=True)
+        self.weight = nn.Parameter(torch.rand((self.shape)) * 0.001, requires_grad=True)
+
+    def forward(self, x):
+        # real_weights = self.weight.view(self.shape)
+        # scaling_factor = torch.mean(torch.mean(torch.mean(abs(real_weights),dim=3,keepdim=True),dim=2,keepdim=True),dim=1,keepdim=True)
+        # #print(scaling_factor, flush=True)
+        # scaling_factor = scaling_factor.detach()
+        # binary_weights_no_grad = scaling_factor * torch.sign(real_weights)
+        # cliped_weights = torch.clamp(real_weights, -1.0, 1.0)
+        # binary_weights = binary_weights_no_grad.detach() - cliped_weights.detach() + cliped_weights
+        # #print(binary_weights, flush=True)
+        # y = F.conv2d(x, binary_weights, stride=self.stride, padding=self.padding)
+
+        k = 6
+        real_weights = self.weight.view(self.shape)
+        Max=torch.max(real_weights)
+        Min=torch.min(real_weights)
+        if Max<-Min:
+            Max=-Min
+        Digital=torch.round(((2**k)-1)*real_weights/Max)
+        quan_weights=Max*Digital/((2**k)-1)
+        self.weight = quan_weights
+        y = F.conv2d(x, quan_weights, stride=1, padding=1)
+
+        return y
+
+def hardBinaryConvForward(x, conv):
+    real_weights = conv.weight
+    # scaling_factor = torch.mean(torch.mean(torch.mean(abs(real_weights),dim=3,keepdim=True),dim=2,keepdim=True),dim=1,keepdim=True)
+    # scaling_factor = scaling_factor.detach()
+    # binary_weights_no_grad = scaling_factor * torch.sign(real_weights)
+    # cliped_weights = torch.clamp(real_weights, -1.0, 1.0)
+    # binary_weights = binary_weights_no_grad.detach() - cliped_weights.detach() + cliped_weights
+    #print(binary_weights, flush=True)
+    k = 3
+    Max=torch.max(real_weights)
+    Min=torch.min(real_weights)
+    if Max<-Min:
+        Max=-Min
+    Digital=torch.round(((2**k)-1)*real_weights/Max)
+    quan_weights=Max*Digital/((2**k)-1)
+    y = F.conv2d(x, quan_weights, stride=1, padding=1)
+    return y
+
+class FakeQuantize(Function):
+
+    @staticmethod
+    def forward(ctx, x, weight_quantize):
+        k = weight_quantize 
+        Max=torch.max(x)
+        Min=torch.min(x)
+        if Max<-Min:
+            Max=-Min
+        Digital = torch.round(((2**k)-1)*x/Max)
+        x = Max*Digital/((2**k)-1)
+        return x
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        return grad_output, None
 
 class tdBatchNorm(nn.BatchNorm2d):
     """tdBN的实现。相关论文链接:https://arxiv.org/pdf/2011.05280。具体是在BN时,也在时间域上作平均;并且在最后的系数中引入了alpha变量以及Vth。

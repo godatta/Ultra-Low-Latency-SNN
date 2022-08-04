@@ -7,7 +7,7 @@ import os
 import pickle
 import seaborn as sns
 
-output_file = 'network_output/ann_vgg16_cifar10_202206250007_test_v2'
+output_file = 'network_output/ann_vgg16_cifar10_202207032300_test'
 # 'network_output/ann_vgg16_cifar10_202206091914_test'
 # 'network_output/ann_vgg16_cifar10_202205182136_test'
 # 'network_output/snn_vgg16_cifar10_1_202205221408_test'
@@ -124,6 +124,6 @@ def plot_heatmap():
     # torch.save(mid_hoyers, 'network_output/my_x_scale_factor_1753')
 
 if __name__ == '__main__':
-    plot_heatmap()
-    # plot()
+    # plot_heatmap()
+    plot()
     # plot('snn')

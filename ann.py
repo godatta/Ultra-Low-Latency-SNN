@@ -1,7 +1,9 @@
 import argparse
+from curses import is_term_resized
 from operator import ge
+from xml.sax.saxutils import quoteattr
 
-from models.vgg_tunable_threshold_tdbn import VGG_TUNABLE_THRESHOLD_tdbn
+from models.vgg_tunable_threshold_tdbn import VGG_TUNABLE_THRESHOLD_tdbn, model_equivalence
 from models.resnet_tunable_threshold import *
 import torch
 import torch.nn as nn
@@ -17,10 +19,14 @@ import os
 import numpy as np
 import json
 import pickle
+import copy
+import cv2
+from tqdm import tqdm
+from math import cos, pi
 from utils.net_utils import *
 # from torch.utils.tensorboard import SummaryWriter
 import wandb
-
+from torch.utils.data.distributed import DistributedSampler
 #from data_prep import *
 #from self_models import *
 
@@ -46,6 +52,49 @@ class AverageMeter(object):
     def __str__(self):
         fmtstr = '{name} {val' + self.fmt + '} ({avg' + self.fmt + '})'
         return fmtstr.format(**self.__dict__)
+
+def accuracy(output, target, topk=(1,)):
+    """Computes the precision@k for the specified values of k"""
+    with torch.no_grad():
+        maxk = max(topk)
+        batch_size = target.size(0)
+
+        _, pred = output.topk(maxk, 1, True, True)
+        pred = pred.t()
+        correct = pred.eq(target.view(1, -1).expand_as(pred))
+
+        res = []
+        for k in topk:
+            correct_k = correct[:k].reshape(-1).float().sum(0)
+            res.append(correct_k.mul_(100.0 / batch_size))
+        return res
+
+def adjust_learning_rate(optimizer, epoch, iteration, num_iter):
+    lr = optimizer.param_groups[0]['lr']
+
+    warmup_epoch = 5 if args.warmup else 0
+    warmup_iter = warmup_epoch * num_iter
+    current_iter = iteration + epoch * num_iter
+    max_iter = args.epochs * num_iter
+
+    if args.lr_decay == 'step':
+        lr = args.learning_rate * (args.gamma ** ((current_iter - warmup_iter) / (max_iter - warmup_iter)))
+    elif args.lr_decay == 'cos':
+        lr = args.learning_rate * (1 + cos(pi * (current_iter - warmup_iter) / (max_iter - warmup_iter))) / 2
+    elif args.lr_decay == 'linear':
+        lr = args.learning_rate * (1 - (current_iter - warmup_iter) / (max_iter - warmup_iter))
+    elif args.lr_decay == 'schedule':
+        count = sum([1 for s in args.schedule if s <= epoch])
+        lr = args.learning_rate * pow(args.gamma, count)
+    else:
+        raise ValueError('Unknown lr mode {}'.format(args.lr_decay))
+
+    if epoch < warmup_epoch:
+        lr = args.learning_rate * current_iter / warmup_iter
+
+
+    for param_group in optimizer.param_groups:
+        param_group['lr'] = lr
 
 def compute_mac(model, dataset):
 
@@ -90,8 +139,8 @@ def train(epoch, loader):
     act_losses = AverageMeter('Loss')
     total_losses = AverageMeter('Loss')
     top1   = AverageMeter('Acc@1')
+    top5   = AverageMeter('Acc@5')
     
-
     if epoch in lr_interval:
         for param_group in optimizer.param_groups:
             param_group['lr'] = param_group['lr'] / lr_reduce
@@ -107,61 +156,72 @@ def train(epoch, loader):
     relu_total_num = torch.tensor([0.0, 0.0, 0.0, 0.0])
     test_hoyer_thr = torch.tensor([0.0]*15)
     model.train() # this is impoetant, cannot remove
-    for batch_idx, (data, target) in enumerate(loader):
+    
+    with tqdm(loader, total=len(loader)) as t:
+        for batch_idx, (data, target) in enumerate(t):
+    # for batch_idx, (data, target) in enumerate(loader):
         
         #start_time = datetime.datetime.now()
 
-        if torch.cuda.is_available() and args.gpu:
-            data, target = data.cuda(), target.cuda()
-                
-        optimizer.zero_grad()
-        #output, _ = model(data)
-        # if act_type == 'relu':
-        #     output, model_thr, relu_batch_num, act_out, thr_out = model(data, epoch)
-        # else:
-        output, model_thr, relu_batch_num, act_out = model(data, epoch)
-        loss = F.cross_entropy(output,target)
-        #make_dot(loss).view()
+            if torch.cuda.is_available() and args.gpu:
+                data, target = data.cuda(), target.cuda()
+                    
+            optimizer.zero_grad()
+            #output, _ = model(data)
+            # if act_type == 'relu':
+            #     output, model_thr, relu_batch_num, act_out, thr_out = model(data, epoch)
+            # else:
+            output, model_thr, relu_batch_num, act_out = model(data, epoch)
+            loss = F.cross_entropy(output,target)
+            #make_dot(loss).view()
 
-        data_size = data.size(0)
-        act_loss = hoyer_decay*act_out
-        # total_loss = loss + act_loss
-        total_loss = loss + act_loss
-        # if act_type == 'relu':
-        #     thr_loss = thr_decay*thr_out
-        #     total_loss += thr_loss
-        total_loss.backward(inputs = list(model.parameters()))
-        
-        optimizer.step()       
-        
-        losses.update(loss.item(),data_size)
-        act_losses.update(act_loss, data_size)
-        # if act_type == 'relu':
-        #     thr_losses.update(thr_loss, data_size)
-        # reg_losses.update(reg_loss, data_size)
-        total_losses.update(total_loss.item(), data_size)
+            data_size = data.size(0)
+            act_loss = hoyer_decay*act_out
+            # total_loss = loss + act_loss
+            total_loss = loss + act_loss
+            # if act_type == 'relu':
+            #     thr_loss = thr_decay*thr_out
+            #     total_loss += thr_loss
+            total_loss.backward(inputs = list(model.parameters()))
+            
+            optimizer.step()       
+            
+            losses.update(loss.item(),data_size)
+            act_losses.update(act_loss, data_size)
+            # if act_type == 'relu':
+            #     thr_losses.update(thr_loss, data_size)
+            # reg_losses.update(reg_loss, data_size)
+            total_losses.update(total_loss.item(), data_size)
 
-        pred = output.max(1,keepdim=True)[1]
-        correct = pred.eq(target.data.view_as(pred)).cpu().sum()
-        top1.update(correct.item()/data_size, data_size)
-        relu_total_num += relu_batch_num
-        test_hoyer_thr += model.test_hoyer_thr
-        # torch.cuda.empty_cache()
-        if epoch == 1 and batch_idx < 5:
-            f.write('\nbatch: {}, train_loss: {:.4f}, act_loss: {:.4f}, thr_loss: {:.4f} total_train_loss: {:.4f} '.format(
-            batch_idx,
-            losses.avg,
-            act_losses.avg,
-            thr_losses.avg,
-            total_losses.avg,
-            ))
-            f.write('train_acc: {:.4f}, output 0: {:.2f}%, relu: {:.2f}%, output threshold: {:.2f}%, time: {}'.format(
-            top1.avg,
-            relu_total_num[0]/relu_total_num[-1]*100,
-            relu_total_num[1]/relu_total_num[-1]*100,
-            relu_total_num[2]/relu_total_num[-1]*100,
-            datetime.timedelta(seconds=(datetime.datetime.now() - start_time).seconds)
-            ))
+            prec1, prec5 = accuracy(output, target, topk=(1, 5))
+
+            # pred = output.max(1,keepdim=True)[1]
+            # correct = pred.eq(target.data.view_as(pred)).cpu().sum()
+            # top1.update(correct.item()/data_size, data_size)
+            # top5.update(correct.item()/data_size, data_size)
+
+            top1.update(prec1.item(), data_size)
+            top5.update(prec5.item(), data_size)
+
+            relu_total_num += relu_batch_num
+            test_hoyer_thr += model.test_hoyer_thr if gpu_nums == 1 else model.module.test_hoyer_thr
+            # torch.cuda.empty_cache()
+            if local_rank==0 and ((epoch == 1 and batch_idx < 5) or (dataset == 'IMAGENET' and batch_idx%100==1)):
+                f.write('\nbatch: {}, train_loss: {:.4f}, act_loss: {:.4f}, thr_loss: {:.4f}, total_train_loss: {:.4f} '.format(
+                batch_idx,
+                losses.avg,
+                act_losses.avg,
+                thr_losses.avg,
+                total_losses.avg,
+                ))
+                f.write('top1_acc: {:.4f}, top5_acc: {:.4f}, output 0: {:.2f}%, relu: {:.2f}%, output threshold: {:.2f}%, time: {}'.format(
+                top1.avg,
+                top5.avg,
+                relu_total_num[0]/relu_total_num[-1]*100,
+                relu_total_num[1]/relu_total_num[-1]*100,
+                relu_total_num[2]/relu_total_num[-1]*100,
+                datetime.timedelta(seconds=(datetime.datetime.now() - start_time).seconds)
+                ))
         # if batch_idx ==6:
         #     exit()
     # writer.add_scalars('Loss/train', {
@@ -174,42 +234,46 @@ def train(epoch, loader):
     # writer.add_scalar('Relu/less_eq_0', relu_total_num[0]/relu_total_num[-1]*100, epoch)
     # writer.add_scalar('Relu/between_0_thr', relu_total_num[1]/relu_total_num[-1]*100, epoch)
     # writer.add_scalar('Relu/laeger_eq_thr', relu_total_num[2]/relu_total_num[-1]*100, epoch)
-    if use_wandb:
-        wandb.log({
-            'loss': losses.avg,
-            'loss_act': act_losses.avg,
-            'loss_thr': thr_losses.avg,
-            'total_loss': total_losses.avg
-        }, step=epoch)
-        for i in range(len(model.test_hoyer_thr)):
-            wandb.log({f'hoyer_thr_{i}': test_hoyer_thr[i]/batch_idx}, step=epoch)
-        wandb.log({'training_acc': top1.avg}, step=epoch)
-        wandb.log({'Relu_less_eq_0': relu_total_num[0]/relu_total_num[-1]*100}, step=epoch)
-        wandb.log({'Relu_between_0_thr': relu_total_num[1]/relu_total_num[-1]*100}, step=epoch)
-        wandb.log({'Relu_laeger_eq_thr': relu_total_num[2]/relu_total_num[-1]*100}, step=epoch)
-    f.write('\n The threshold in ann is: {}'.format([p.data for p in model_thr]))
-    f.write('\nEpoch: {}, lr: {:.1e}, train_loss: {:.4f}, act_loss: {:.4f}, thr_loss: {:.4f} total_train_loss: {:.4f} '.format(
-            epoch,
-            learning_rate,
-            losses.avg,
-            act_losses.avg,
-            thr_losses.avg,
-            total_losses.avg,
+    if local_rank == 0:
+        if use_wandb:
+            wandb.log({
+                'loss': losses.avg,
+                'loss_act': act_losses.avg,
+                'loss_thr': thr_losses.avg,
+                'total_loss': total_losses.avg
+            }, step=epoch)
+            # for i in range(len(model.test_hoyer_thr)):
+            #     wandb.log({f'hoyer_thr_{i}': test_hoyer_thr[i]/batch_idx}, step=epoch)
+            wandb.log({'training_acc': top1.avg}, step=epoch)
+            wandb.log({'top_5_acc': top5.avg}, step=epoch)
+            wandb.log({'Relu_less_eq_0': relu_total_num[0]/relu_total_num[-1]*100}, step=epoch)
+            wandb.log({'Relu_between_0_thr': relu_total_num[1]/relu_total_num[-1]*100}, step=epoch)
+            wandb.log({'Relu_laeger_eq_thr': relu_total_num[2]/relu_total_num[-1]*100}, step=epoch)
+        f.write('\n The threshold in ann is: {}'.format([p.data for p in model_thr]))
+        f.write('\nEpoch: {}, lr: {:.1e}, train_loss: {:.4f}, act_loss: {:.4f}, thr_loss: {:.4f}, total_train_loss: {:.4f} '.format(
+                epoch,
+                learning_rate,
+                losses.avg,
+                act_losses.avg,
+                thr_losses.avg,
+                total_losses.avg,
+                )
             )
-        )
-    f.write('train_acc: {:.4f}, output 0: {:.2f}%, relu: {:.2f}%, output threshold: {:.2f}%, time: {}'.format(
-            top1.avg,
-            relu_total_num[0]/relu_total_num[-1]*100,
-            relu_total_num[1]/relu_total_num[-1]*100,
-            relu_total_num[2]/relu_total_num[-1]*100,
-            datetime.timedelta(seconds=(datetime.datetime.now() - start_time).seconds)
+        f.write('top1_acc: {:.4f}, top5_acc: {:.4f}, output 0: {:.2f}%, relu: {:.2f}%, output threshold: {:.2f}%, time: {}'.format(
+                top1.avg,
+                top5.avg,
+                relu_total_num[0]/relu_total_num[-1]*100,
+                relu_total_num[1]/relu_total_num[-1]*100,
+                relu_total_num[2]/relu_total_num[-1]*100,
+                datetime.timedelta(seconds=(datetime.datetime.now() - start_time).seconds)
+                )
             )
-        )
 
 def test(epoch, loader):
 
     losses = AverageMeter('Loss')
     top1   = AverageMeter('Acc@1')
+    top5   = AverageMeter('Acc@5')
     act_losses = AverageMeter('Loss') 
     thr_losses = AverageMeter('Loss')
     total_losses = AverageMeter('Loss')
@@ -226,7 +290,9 @@ def test(epoch, loader):
             
         relu_total_num = torch.tensor([0.0, 0.0, 0.0, 0.0])
         test_hoyer_thr = torch.tensor([0.0]*15)
-        for batch_idx, (data, target) in enumerate(loader):
+
+        for batch_idx, (data, target) in enumerate(tqdm(loader)):
+        # for batch_idx, (data, target) in enumerate(loader):
             if torch.cuda.is_available() and args.gpu:
                 data, target = data.cuda(), target.cuda()
             
@@ -315,21 +381,26 @@ def test(epoch, loader):
             else:
                 act_loss = hoyer_decay*act_out
             total_loss = loss+act_loss
-            # if act_type == 'relu':
-            #     thr_loss = thr_decay*thr_out
-            #     total_loss += thr_loss
-            pred = output.max(1, keepdim=True)[1]
-            correct = pred.eq(target.data.view_as(pred)).cpu().sum()
 
             act_losses.update(act_loss, data_size)
             losses.update(loss.item(), data_size)
             # if act_type == 'relu':
             #     thr_losses.update(thr_loss, data_size)
             total_losses.update(total_loss.item(), data_size)
-            top1.update(correct.item()/data_size, data_size)
+            # if act_type == 'relu':
+            #     thr_loss = thr_decay*thr_out
+            #     total_loss += thr_loss
+
+            prec1, prec5 = accuracy(output, target, topk=(1, 2 ))
+
+            # pred = output.max(1, keepdim=True)[1]
+            # correct = pred.eq(target.data.view_as(pred)).cpu().sum()            
+            # top1.update(correct.item()/data_size, data_size)
+            top1.update(prec1.item(), data_size)
+            top5.update(prec5.item(), data_size)
 
             relu_total_num += relu_batch_num
-            test_hoyer_thr += model.test_hoyer_thr
+            test_hoyer_thr += model.test_hoyer_thr if gpu_nums == 1 else model.module.test_hoyer_thr
         #with open('percentiles_resnet20_cifar100.json','w') as f:
         #    json.dump(percentiles, f)
 
@@ -353,14 +424,15 @@ def test(epoch, loader):
         if not test_only and use_wandb:
             wandb.log({'test_acc': top1.avg}, step=epoch)
         # writer.add_scalar('Accuracy/test', top1.avg, epoch)
-        if (top1.avg>=max_accuracy) and top1.avg>0.88:
+        # if (top1.avg>=max_accuracy) and top1.avg>0.88:
+        if (top1.avg>=max_accuracy):
             max_accuracy = top1.avg
             # if not test_only:
             #     wandb.run.summary["best_accuracy"] = top1.avg
             state = {
                     'accuracy'      : max_accuracy,
                     'epoch'         : epoch,
-                    'state_dict'    : model.state_dict(),
+                    'state_dict'    : model.state_dict() if gpu_nums==1 else model.module.state_dict(),
                     'optimizer'     : optimizer.state_dict()
             }
             try:
@@ -382,8 +454,9 @@ def test(epoch, loader):
             total_losses.avg,
             )
         )
-        f.write('test_acc: {:.4f}, output 0: {:.2f}%, relu: {:.2f}%, output threshold: {:.2f}%, time: {}\n'.format(
+        f.write('top1_acc: {:.4f}, top5_acc: {:.4f}, output 0: {:.2f}%, relu: {:.2f}%, output threshold: {:.2f}%, time: {}\n'.format(
             top1.avg,
+            top5.avg,
             relu_total_num[0]/relu_total_num[-1]*100,
             relu_total_num[1]/relu_total_num[-1]*100,
             relu_total_num[2]/relu_total_num[-1]*100,
@@ -397,6 +470,75 @@ def test(epoch, loader):
         #     datetime.timedelta(seconds=(datetime.datetime.now() - current_time).seconds)
         #     )
         # )
+
+def visualize(loader, to_path, visual_type=['directly', 'grad_cam'], num_imgs=100):
+
+    model.eval()
+    try:
+        os.makedirs(to_path)
+    except OSError:
+        pass
+
+    def minmax(x):
+        return (x-np.min(x))/(1e-10+np.max(x)-np.min(x))
+
+    activation = {}
+    def get_activation(name):
+        def hook(model, input, output):
+            activation[name] = output
+        return hook
+
+    name_list = []
+    module_list = []
+    for (name, module) in model.named_modules():
+        if name.endswith('pool_weight'):
+            module.register_forward_hook(get_activation(name))
+            name_list.append(name)
+            module_list.append(module)
+
+    for batch_idx, (data, target) in enumerate(tqdm(loader)):
+        if batch_idx > num_imgs:
+            break
+
+        if torch.cuda.is_available() and args.gpu:
+            data, target = data.to('cuda:2'), target.to('cuda:2')
+
+        output = model(data)
+
+        pred = output.max(1,keepdim=True)[1]
+        (b, c, h, w) = data.shape
+        img = data[0,:,:,:].detach().cpu().numpy().transpose([1,2,0])
+        img = np.uint8(255 * minmax(img))
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+        img_name = f'img{batch_idx+1}'
+
+        cv2.imwrite(os.path.join(f'/nas/home/fangc/Non-Local-Pooling/base/visualization/imgs/{img_name}.jpg'), img)
+
+
+class QuantizedModel(nn.Module):
+    def __init__(self, model_fp32):
+
+        super(QuantizedModel, self).__init__()
+        # QuantStub converts tensors from floating point to quantized.
+        # This will only be used for inputs.
+        self.quant = torch.quantization.QuantStub()
+        # DeQuantStub converts tensors from quantized to floating point.
+        # This will only be used for outputs.
+        self.dequant = torch.quantization.DeQuantStub()
+        # FP32 model
+        self.model_fp32 = model_fp32
+        self.test_hoyer_thr = torch.tensor([0.0]*15)
+
+    def forward(self, x, epoch=0):
+        # manually specify where tensors will be converted from floating
+        # point to quantized in the quantized model
+        x = self.quant(x)
+        x, self.threshold_out, self.relu_batch_num, act_out  = self.model_fp32(x, epoch)
+        # manually specify where tensors will be converted from quantized
+        # to floating point in the quantized model
+        x = self.dequant(x)
+        return x, self.threshold_out, self.relu_batch_num, act_out
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Train ANN to be later converted to SNN', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -416,9 +558,11 @@ if __name__ == '__main__':
     parser.add_argument('-lr','--learning_rate',    default=1e-2,               type=float,     help='initial learning_rate')
     parser.add_argument('--lr_interval',            default='0.45 0.70 0.90',   type=str,       help='intervals at which to reduce lr, expressed as %%age of total epochs')
     parser.add_argument('--lr_reduce',              default=10,                 type=int,       help='reduction factor for learning rate')
+    parser.add_argument('--lr_decay',               default='step',             type=str,       help='mode for learning rate decay')
 
     parser.add_argument('--dataset',                default='CIFAR10',          type=str,       help='dataset name', choices=['MNIST','CIFAR10','CIFAR100', 'IMAGENET'])
     parser.add_argument('--batch_size',             default=64,                 type=int,       help='minibatch size')
+    parser.add_argument('--im_size',                default=None,               type=int,       help='image size')
 
 
     parser.add_argument('-a','--architecture',      default='VGG16',            type=str,       help='network architecture', choices=['VGG4','VGG6','VGG9','VGG11','VGG13','VGG16','VGG19','RESNET12','RESNET20','RESNET34'])
@@ -440,8 +584,8 @@ if __name__ == '__main__':
     # parser.add_argument('--act_type',               default='spike',            type=str,       help='thr: tunable threshold, relu: relu with thr, spike: tunable spiking')
     # parser.add_argument('--thr_decay',              default=0.0001,             type=float,     help='weight decay for threshold loss (default: 0.001)')
     parser.add_argument('--hoyer_type',             default='mean',             type=str,       help='mean:, sum:, mask')
-    parser.add_argument('--act_mode',               default='v1',               type=str,       help='fixed,mean,sum,channelwise(cw), spike: the type of activation function')
-    parser.add_argument('--start_spike_layer',      default=20,                 type=int,       help='start_spike_layer')
+    parser.add_argument('--act_mode',               default='v1',               type=str,       help='fixed: threshold always is 1.0, sum: use sum hoyer as thr, channelwise(cw): use cw hoyer as thr ')
+    parser.add_argument('--start_spike_layer',      default=50,                 type=int,       help='start_spike_layer')
     parser.add_argument('--bn_type',                default='bn',               type=str,       help='bn: , tdbn: , fake: the type of batch normalization')
     parser.add_argument('--conv_type',              default='ori',              type=str,       help='ori: original conv, dy: dynamic conv,')
     parser.add_argument('--test_type',              default='v1',               type=str,       help='v1: dist of the output of every layer, v2: visualize the hist of every activation map,')
@@ -450,7 +594,13 @@ if __name__ == '__main__':
     parser.add_argument('--sub_act_mask',           action='store_true',                        help='if use sub activation mask')
     parser.add_argument('--x_thr_scale',            default=1.0,                type=float,     help='the scale of x thr')
     parser.add_argument('--pooling_type',           default='max',              type=str,       help='maxpool and avgpool')
+    parser.add_argument('--weight_quantize',        default=0,                  type=int,       help='how many bit to quantize the weights')
+    parser.add_argument('--qat',                    default=0,                  type=int,       help='how many bit to quantization aware training')
+    parser.add_argument('--visualize',              action='store_true',                        help='visualize the attention map')
+    parser.add_argument('--warmup',                 action='store_true',                        help='set lower initial learning rate to warm up the training')
 
+    parser.add_argument('--nodes',                  default=1,                  type=int,       help='nodes')
+    parser.add_argument('--rank',                   default=0,                  type=int,       help='ranking within the nodes')
 
 
     args=parser.parse_args()
@@ -467,6 +617,7 @@ if __name__ == '__main__':
     
     dataset         = args.dataset
     batch_size      = args.batch_size
+    im_size         = args.im_size
     architecture    = args.architecture
     kernel_size     = args.kernel_size
     threshold       = args.relu_threshold
@@ -505,6 +656,19 @@ if __name__ == '__main__':
     sub_act_mask    = args.sub_act_mask
     x_thr_scale     = args.x_thr_scale
     pooling_type    = args.pooling_type
+    weight_quantize = args.weight_quantize
+    qat             = args.qat
+    gpu_nums        = (len(args.devices)+1) // 2
+
+    if gpu_nums > 1:
+        # distubition initialization
+        torch.distributed.init_process_group(backend="nccl")
+        local_rank = torch.distributed.get_rank()
+        print('local rank: {}'.format(local_rank))
+        torch.cuda.set_device(local_rank)
+        device = torch.device("cuda", local_rank)
+    else:
+        local_rank = 0
 
     values = lr_interval_arg.split()
     lr_interval = []
@@ -556,14 +720,29 @@ if __name__ == '__main__':
     elif dataset == 'IMAGENET':
         normalize   = transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
         labels = 1000
+    elif dataset == 'STL10':
+        normalize = transforms.Normalize(mean=[0.5, 0.5, 0.5],
+                                         std=[0.5, 0.5, 0.5])
+        labels = 10
+    elif dataset == 'VWW':
+        labels = 2
 
     
     if dataset == 'CIFAR10' or dataset == 'CIFAR100':
-        transform_train = transforms.Compose([
-        transforms.RandomCrop(32, padding=4),
-        transforms.RandomHorizontalFlip(),
-        transforms.ToTensor(),
-        normalize])
+        if im_size == None:
+            im_size = 32
+            transform_train = transforms.Compose([
+                              transforms.RandomCrop(32, padding=4),
+                              transforms.RandomHorizontalFlip(),
+                              transforms.ToTensor(),
+                              normalize])
+        else:
+            transform_train = transforms.Compose([
+                              transforms.Resize(im_size),
+                              transforms.RandomResizedCrop(im_size),
+                              transforms.RandomHorizontalFlip(),
+                              transforms.ToTensor(),
+                              normalize])
         transform_test = transforms.Compose([transforms.ToTensor(), normalize])
     
     if dataset == 'CIFAR100':
@@ -579,37 +758,93 @@ if __name__ == '__main__':
             )
         test_dataset    = datasets.MNIST(root='./mnist/', train=False, download=True, transform=transforms.ToTensor())
     elif dataset == 'IMAGENET':
-        traindir    = os.path.join('/m2/data/imagenet', 'train')
-        valdir      = os.path.join('/m2/data/imagenet', 'val')
-        train_dataset    = datasets.ImageFolder(
-                            traindir,
-                            transforms.Compose([
-                                transforms.RandomResizedCrop(224),
-                                transforms.RandomHorizontalFlip(),
-                                transforms.ToTensor(),
-                                normalize,
-                            ]))
+        # traindir    = os.path.join('/m2/data/imagenet', 'train')
+        # valdir      = os.path.join('/m2/data/imagenet', 'val')
+        traindir    = os.path.join('/nas/vista-ssd01/batl/public_datasets/ImageNet', 'train')
+        valdir      = os.path.join('/nas/vista-ssd01/batl/public_datasets/ImageNet', 'val')
+        if im_size == None:
+            im_size = 224
+            train_dataset    = datasets.ImageFolder(
+                                traindir,
+                                transforms.Compose([
+                                    transforms.RandomResizedCrop(224),
+                                    transforms.RandomHorizontalFlip(),
+                                    transforms.ToTensor(),
+                                    normalize,
+                                ]))
+        else:
+            train_dataset    = datasets.ImageFolder(
+                                traindir,
+                                transforms.Compose([
+                                    transforms.Resize(im_size),
+                                    transforms.RandomResizedCrop(im_size),
+                                    transforms.RandomHorizontalFlip(),
+                                    transforms.ToTensor(),
+                                    normalize,
+                                ]))
         test_dataset     = datasets.ImageFolder(
                             valdir,
                             transforms.Compose([
-                                transforms.Resize(256),
-                                transforms.CenterCrop(224),
+                                transforms.Resize(im_size+32), # 256
+                                transforms.CenterCrop(im_size), # 224
                                 transforms.ToTensor(),
                                 normalize,
                             ]))
+    elif dataset == 'STL10':
+        if im_size==None:
+            im_size = 96
+            transform_train = transforms.Compose([
+                              transforms.RandomResizedCrop(96),
+                              transforms.RandomHorizontalFlip(),
+                              transforms.ToTensor(),
+                              normalize])
+        else:
+            transform_train = transforms.Compose([
+                              transforms.Resize(im_size),
+                              transforms.RandomResizedCrop(im_size),
+                              transforms.RandomHorizontalFlip(),
+                              transforms.ToTensor(),
+                              normalize])
+        transform_test = transforms.Compose([
+                         transforms.Resize(im_size),
+                         transforms.CenterCrop(im_size),
+                         transforms.ToTensor(),
+                         normalize,
+                         ])
+        train_dataset = datasets.stl10.STL10(root=root+"/data/stl10_data", split="train", download=True, transform=transform_train)
+        test_dataset = datasets.stl10.STL10(root=root+"/data/stl10_data", split="test", download=True, transform=transform_test)
+    
+    elif dataset == 'VWW':
+        train_transform = transforms.Compose([transforms.RandomHorizontalFlip(), \
+            transforms.Resize(size=(args.im_size, args.im_size)), transforms.ToTensor()])
+        test_transform = transforms.Compose([transforms.Resize(size=(args.im_size, args.im_size)), transforms.ToTensor()])
+
+        train_dataset = VisualWakeWordsClassification_rgb(root="/home/ubuntu/data/all2014", \
+            annFile="/home/ubuntu/annotations/instances_train.json", transform=train_transform)
+        #train_loader = torch.utils.data.DataLoader(dataset=train_set, batch_size=args.batch_size, num_workers=8,
+        #    pin_memory=True, shuffle=True)
+        test_dataset = VisualWakeWordsClassification_rgb(root="/home/ubuntu/data/all2014", \
+               annFile="/home/ubuntu/annotations/instances_val.json", transform=test_transform)
+        #test_loader = torch.utils.data.DataLoader(dataset=test_set, batch_size=args.test_batch_size, num_workers=8,
+        #    pin_memory=True, shuffle=False)
 
 
-    
-    train_loader    = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=True)
-    
-    test_loader     = torch.utils.data.DataLoader(dataset=test_dataset, batch_size=batch_size, shuffle=False)
-    
+    if gpu_nums == 1:
+        train_loader    = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=batch_size, num_workers=16, shuffle=True)
+        test_loader     = torch.utils.data.DataLoader(dataset=test_dataset, batch_size=batch_size, num_workers=16, shuffle=False)
+    else:
+        train_sampler = DistributedSampler(train_dataset)
+        test_sampler = DistributedSampler(test_dataset)
+        train_loader    = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=batch_size, num_workers=16, sampler=train_sampler)
+        test_loader     = torch.utils.data.DataLoader(dataset=test_dataset, batch_size=batch_size, num_workers=16, sampler=test_sampler)
+                
     if architecture[0:3].lower() == 'vgg':
         # act_type == 'tdbn'
         model = VGG_TUNABLE_THRESHOLD_tdbn(vgg_name=architecture, labels=labels, dataset=dataset, kernel_size=kernel_size,\
             linear_dropout=linear_dropout, conv_dropout = conv_dropout, default_threshold=threshold,\
             net_mode=net_mode, hoyer_type=hoyer_type, act_mode=act_mode, bn_type=bn_type, start_spike_layer=start_spike_layer,\
-            conv_type=conv_type, pool_pos=pool_pos, sub_act_mask=sub_act_mask, x_thr_scale=x_thr_scale, pooling_type=pooling_type)
+            conv_type=conv_type, pool_pos=pool_pos, sub_act_mask=sub_act_mask, x_thr_scale=x_thr_scale, pooling_type=pooling_type, \
+            weight_quantize=weight_quantize, im_size=im_size)
 
     elif architecture[0:3].lower() == 'res':
         if architecture.lower() == 'resnet12':
@@ -627,6 +862,12 @@ if __name__ == '__main__':
     #model = nn.DataParallel(model.cuda(),device_ids=[0,1,2])
     #model.cuda()
     #model = nn.DataParallel(model)
+    if local_rank == 0:
+        total_params = sum(p.numel() for p in model.parameters())
+        print(f'{total_params:,} total parameters.')
+        total_trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        print(f'{total_trainable_params:,} training parameters.')
+
 
     if pretrained_ann:
         state = torch.load(pretrained_ann, map_location='cpu')
@@ -676,18 +917,38 @@ if __name__ == '__main__':
     
     if torch.cuda.is_available() and args.gpu:
         model.cuda()
-    
+
+
+    all_parameters = model.parameters()
+    weight_parameters = []
+    for pname, p in model.named_parameters():
+        if p.ndimension() >= 2:
+            weight_parameters.append(p)
+    weight_parameters_id = list(map(id, weight_parameters))
+    other_parameters = list(filter(lambda p: id(p) not in weight_parameters_id, all_parameters))
+
     if optimizer == 'SGD':
         optimizer = optim.SGD(model.parameters(), lr=learning_rate, momentum=momentum, weight_decay=weight_decay)
     elif optimizer == 'Adam':
-        optimizer = optim.Adam(model.parameters(), lr=learning_rate, amsgrad=True, weight_decay=weight_decay)
-    
-    f.write('\n {}'.format(optimizer))
+        optimizer = optim.Adam(
+            [{'params' : other_parameters},
+            {'params' : weight_parameters, 'weight_decay' : args.weight_decay}],
+            lr=learning_rate,amsgrad=True)
+        # optimizer = optim.Adam(model.parameters(), lr=learning_rate, amsgrad=True, weight_decay=weight_decay)
+    elif optimizer == 'RMSProp':
+        optimizer = optim.RMSprop(
+            [{'params' : other_parameters},
+            {'params' : weight_parameters, 'weight_decay' : args.weight_decay}], 
+            lr = learning_rate)
+    if local_rank == 0:
+        f.write('\n {}'.format(optimizer))
 
+    if gpu_nums > 1:
+        model = torch.nn.parallel.DistributedDataParallel(model)
     # tensorboard_log_name = 'runs/' + identifier
     # writer = SummaryWriter(tensorboard_log_name)
     # f.write(f'tensorboead log file is saved at {tensorboard_log_name}')
-    if not test_only and use_wandb:
+    if not test_only and use_wandb and local_rank == 0:
         dir = os.path.join('wandb', identifier)
         try:
             os.mkdir(dir)
@@ -703,14 +964,71 @@ if __name__ == '__main__':
     # parser_args = {'learn_batchnorm': False,'bn_bias_only': False, 'tune_batchnorm': False}
     if sub_act_mask:
         freeze_model_weights(model=model)
+
+    if qat != 0:
+        # move the model to cpu and set train mode
+        cpu_device = torch.device("cpu:0")
+        model.cpu()
+        fused_model = copy.deepcopy(model)
+        model.train()
+        fused_model.train()
+        print(model)
+        modules_to_fuse = [['features.0', 'features.1'],
+                            ['features.7', 'features.8'],
+                            ['features.14', 'features.15'],
+                            ['features.17', 'features.18'],
+                            ['features.27', 'features.28'],
+                            ['features.34', 'features.35'],
+                            ['features.37', 'features.38'],
+                            ['features.40', 'features.41'],
+                            ]
+        fused_model = torch.quantization.fuse_modules(fused_model,
+                                                  modules_to_fuse,
+                                                  inplace=True)
+        print(fused_model)
+        # assert model_equivalence(
+        #     model_1=model, model_2=fused_model,
+        #     device=torch.device("cpu:0"), rtol=1e-03, atol=1e-06, num_tests=100,
+        #     input_size=(1, 3, 32, 32)), "Fused model is not equivalent to the original model!"
+        # 
+        quantized_model = QuantizedModel(fused_model)
+        quantization_config = torch.quantization.get_default_qconfig("fbgemm")
+        quantized_model.qconfig = quantization_config
+        print(quantized_model.qconfig)
+        torch.quantization.prepare_qat(quantized_model, inplace=True)
+        print("Training QAT Model...")
+        quantized_model.train()
+        model = quantized_model
+        model.cuda()
+        for epoch in range(1, 11):    
+            start_time = datetime.datetime.now()
+            train(epoch, train_loader)
+            test(epoch, test_loader)
+
+        model.to(cpu_device)
+        quantized_model = torch.quantization.convert(model, inplace=True)
+        quantized_model.eval()
+        print(quantized_model)
+        model = quantized_model
+        test(epoch, test_loader)
+    
+        exit()
+
+
+
     for epoch in range(1, epochs+1):    
         start_time = datetime.datetime.now()
         if not test_only:
             train(epoch, train_loader)
-        test(epoch, test_loader)
+        if local_rank == 0:
+            test(epoch, test_loader)
         if test_only:
             break
     
+    if args.visualize:
+        visual_loader = torch.utils.data.DataLoader(dataset=test_dataset, batch_size=1, shuffle=False)
+        visualize(visual_loader, to_path=f'./visualization/{identifier}')
+
     f.write('\n End on time: {}'.format(datetime.datetime.now()))      
     f.write('\n Highest accuracy: {:.4f}'.format(max_accuracy))
 
