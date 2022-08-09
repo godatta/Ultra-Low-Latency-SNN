@@ -4,8 +4,6 @@
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-import pdb
 import math
 
 class BasicBlock(nn.Module):
@@ -85,17 +83,17 @@ class ResNet_Tunable_Threshold(nn.Module):
                 
         pos = len(self.pre_process)#
         if num_blocks == [1, 1, 1, 1]:
-            total_res = 14
+            total_res = 14 # 3 + 4*2s
             for l in range(total_res):
                 threshold['t'+str(pos)] = nn.Parameter(torch.tensor(default_threshold))
                 pos = pos + 1
         elif num_blocks == [2, 2, 2, 2]:
-            total_res = 22
+            total_res = 22 # 3 + 8*2s
             for l in range(total_res):
                 threshold['t'+str(pos)] = nn.Parameter(torch.tensor(default_threshold))
                 pos = pos + 1
         elif num_blocks == [3, 4, 5, 3]:
-            total_res = 36
+            total_res = 36 # 3 + 4*2s
             for l in range(total_res):
                 threshold['t'+str(pos)] = nn.Parameter(torch.tensor(default_threshold))
                 pos = pos + 1

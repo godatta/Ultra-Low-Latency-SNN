@@ -1,9 +1,8 @@
 import torch
 import torch.nn as nn
-import torch.utils.model_zoo as model_zoo
 import torch.nn.functional as F
-
 from models.self_modules import HoyerBiAct
+
 
 
 __all__ = ['birealnet18', 'birealnet34']
@@ -64,13 +63,19 @@ class HardBinaryConv(nn.Module):
 class BasicBlock(nn.Module):
     expansion = 1
 
-    def __init__(self, inplanes, planes, stride=1, downsample=None):
+    def __init__(self, inplanes, planes, stride=1, downsample=None, threshold=1.0,\
+         epoch=1, min_thr_scale=0.0, max_thr_scale=1.0, x_thr_scale=1.0, if_spike=0):
         super(BasicBlock, self).__init__()
 
-        self.binary_activation = nn.ReLU(inplace=True)
+        # self.binary_activation = nn.ReLU(inplace=True)
         # BinaryActivation()
         # self.binary_conv = HardBinaryConv(inplanes, planes, stride=stride)
-        # self.binary_activation = HoyerBiAct(num_features=inplanes, hoyer_type='sum')
+        self.epoch = epoch
+        self.min_thr_scale  = min_thr_scale
+        self.max_thr_scale  = max_thr_scale
+        self.x_thr_scale    = x_thr_scale
+        self.threshold      = threshold
+        self.binary_activation = HoyerBiAct(num_features=inplanes, hoyer_type='sum', x_thr_scale=self.x_thr_scale, if_spike=if_spike)
 
         self.binary_conv = conv3x3(inplanes, planes,stride=stride)
         self.bn1 = nn.BatchNorm2d(planes)
@@ -80,14 +85,8 @@ class BasicBlock(nn.Module):
 
     def forward(self, x):
         residual = x
-        min_thr_scale = 0.0
-        max_thr_scale = 1.0
-        x_thr_scale = 1.0
-        layer_index = 0
-        start_spike_layer = 50
-        epoch=1
+        # always spike
         out = self.binary_activation(x)
-        # out = self.binary_activation(x, epoch, min_thr_scale, max_thr_scale, x_thr_scale, layer_index, start_spike_layer)
         out = self.binary_conv(out)
         out = self.bn1(out)
 
@@ -98,21 +97,48 @@ class BasicBlock(nn.Module):
 
         return out
 
-class BiRealNet(nn.Module):
-
-    def __init__(self, block, layers, num_classes=1000, zero_init_residual=False):
-        super(BiRealNet, self).__init__()
+class ResNet_hoyer(nn.Module):
+    def __init__(self, block, num_blocks, labels=10, dataset = 'CIFAR10', kernel_size=3, linear_dropout=0.1, conv_dropout=0.1, default_threshold=1.0, \
+        net_mode='ori', hoyer_type='mean', act_mode = 'mean', bn_type='bn', start_spike_layer=50, conv_type='ori', pool_pos='after_relu', sub_act_mask=False, \
+        x_thr_scale=1.0, pooling_type='max', weight_quantize=1, im_size=224):
+        
+        super(ResNet_hoyer, self).__init__()
         self.inplanes = 64
-        self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3,
-                               bias=False)
+        self.conv_dropout   = conv_dropout
+        self.act_mode       = act_mode
+        self.hoyer_type     = hoyer_type
+        self.x_thr_scale    = x_thr_scale
+        self.if_spike       = True if start_spike_layer == 0 else False 
+        if dataset == 'CIFAR10':
+            self.pre_process = nn.Sequential(
+                                nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False),
+                                nn.BatchNorm2d(64),
+                                HoyerBiAct(num_features=64, hoyer_type=self.act_mode, x_thr_scale=self.x_thr_scale, if_spike=self.if_spike),
+                                # nn.Dropout(self.conv_dropout),
+
+                                nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1, bias=False),
+                                nn.BatchNorm2d(64),
+                                HoyerBiAct(num_features=64, hoyer_type=self.act_mode, x_thr_scale=self.x_thr_scale, if_spike=self.if_spike),
+                                # nn.Dropout(self.conv_dropout),
+
+                                nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1, bias=False),
+                                # nn.MaxPool2d(2),
+                                # nn.BatchNorm2d(64),
+                                # HoyerBiAct(num_features=64, hoyer_type=self.act_mode)
+                                )
+        elif dataset == 'IMAGENET':
+            self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3,
+                                bias=False)
+        else:
+            raise RuntimeError('only for ciafar10 and imagenet now')
         self.bn1 = nn.BatchNorm2d(64)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
-        self.layer1 = self._make_layer(block, 64, layers[0])
-        self.layer2 = self._make_layer(block, 128, layers[1], stride=2)
-        self.layer3 = self._make_layer(block, 256, layers[2], stride=2)
-        self.layer4 = self._make_layer(block, 512, layers[3], stride=2)
+        self.layer1 = self._make_layer(block, 64, num_blocks[0])
+        self.layer2 = self._make_layer(block, 128, num_blocks[1], stride=2)
+        self.layer3 = self._make_layer(block, 256, num_blocks[2], stride=2)
+        self.layer4 = self._make_layer(block, 512, num_blocks[3], stride=2)
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
-        self.fc = nn.Linear(512 * block.expansion, num_classes)
+        self.fc = nn.Linear(512 * block.expansion, labels)
         self.relu_batch_num = 0
 
 
@@ -120,9 +146,11 @@ class BiRealNet(nn.Module):
         downsample = None
         if stride != 1 or self.inplanes != planes * block.expansion:
             downsample = nn.Sequential(
-                nn.AvgPool2d(kernel_size=2, stride=stride),
+                nn.MaxPool2d(kernel_size=2, stride=stride),
+                nn.BatchNorm2d(self.inplanes),
+                HoyerBiAct(num_features=self.inplanes, hoyer_type=self.act_mode, x_thr_scale=self.x_thr_scale, if_spike=self.if_spike),
+                # nn.AvgPool2d(kernel_size=2, stride=stride),
                 conv1x1(self.inplanes, planes * block.expansion),
-                nn.BatchNorm2d(planes * block.expansion),
             )
 
         layers = []
@@ -133,31 +161,65 @@ class BiRealNet(nn.Module):
 
         return nn.Sequential(*layers)
 
-    def forward(self, x, epoch=1.0):
+    def hoyer_loss(self, x, act_out):
+        if torch.sum(torch.abs(x))>0: #  and l < self.start_spike_layer
+            if self.hoyer_type == 'mean':
+                return torch.mean(torch.sum(torch.abs(x), dim=(1,2,3))**2 / torch.sum((x)**2, dim=(1,2,3))).clone()
+            elif self.hoyer_type == 'sum':
+                return  (torch.sum(torch.abs(x))**2 / torch.sum((x)**2)).clone()
+            elif self.hoyer_type == 'cw':
+                hoyer_thr = torch.sum((x)**2, dim=(0,2,3)) / torch.sum(torch.abs(x), dim=(0,2,3)).clone()
+                # 1.0 is the max thr
+                hoyer_thr = torch.nan_to_num(hoyer_thr, nan=1.0)
+                return torch.mean(hoyer_thr)
+    def num_relu(self, x, min_thr_scale, max_thr_scale, thr):
+        # epoch = 1
+        # min = (x<epoch*1e-3).sum()
+        # max = (x>1.0 - epoch*1e-3).sum()
+
+        min = (x<=min_thr_scale*thr).sum()
+        max = (x>=max_thr_scale*thr).sum()
+        total = x.view(-1).shape[0]
+        return torch.tensor([min, total-min-max, max, total])
+
+    def forward(self, x):
+        relu_batch_num = torch.tensor([0.0, 0.0, 0.0, 0.0])
         act_out = 0.0
-        x = self.conv1(x)
+        x = self.pre_process(x)
         x = self.bn1(x)
         x = self.maxpool(x)
+        act_out += self.hoyer_loss(x)
 
-        x = self.layer1(x)
-        x = self.layer2(x)
-        x = self.layer3(x)
-        x = self.layer4(x)
+        for layer in [self.layer1, self.layer2, self.layer3, self.layer4]:
+            x = layer(x)
+            act_out += self.hoyer_loss(x)
+            self.relu_batch_num += self.num_relu(x, 0.0, 1.0, torch.max(x).clone().detach())
+        
+
 
         x = self.avgpool(x)
         x = x.view(x.size(0), -1)
         x = self.fc(x)
 
-        return x, act_out
+        return x,[], relu_batch_num, act_out
 
 
-def birealnet18(pretrained=False, **kwargs):
+def resnet18(pretrained=False, **kwargs):
     """Constructs a BiRealNet-18 model. """
-    model = BiRealNet(BasicBlock, [4, 4, 4, 4], **kwargs)
+    model = ResNet_hoyer(BasicBlock, [4, 4, 4, 4], **kwargs)
     return model
 
+def resnet20(pretrained=False, **kwargs):
+    """Constructs a BiRealNet-18 model. """
+    model = ResNet_hoyer(BasicBlock, [4, 4, 4, 4], **kwargs)
+    return model
+
+def resnet34_cifar(pretrained=False, **kwargs):
+    """Constructs a BiRealNet-18 model. """
+    model = ResNet_hoyer(BasicBlock, [6, 8, 10, 6], **kwargs)
+    return model
 
 def birealnet34(pretrained=False, **kwargs):
     """Constructs a BiRealNet-34 model. """
-    model = BiRealNet(BasicBlock, [6, 8, 12, 6], **kwargs)
+    model = ResNet_hoyer(BasicBlock, [6, 8, 12, 6], **kwargs)
     return model

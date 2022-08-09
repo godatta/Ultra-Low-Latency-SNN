@@ -43,4 +43,3 @@ bk
 test_ann.sh
 utils/__pycache__
 z_tools
-ann_imagenet.py

@@ -1,13 +1,10 @@
-from tkinter.messagebox import NO
-from typing import Optional, Any
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import pdb
 import math
 import numpy as np
 from models.dynamic_conv import Dynamic_conv2d
-from models.self_modules import HoyerBiAct, tdBatchNorm, ThrBiAct, SubBiAct, HardBinaryConv, hardBinaryConvForward, FakeQuantize
+from models.self_modules import HoyerBiAct, tdBatchNorm, ThrBiAct, SubBiAct, HardBinaryConv, FakeQuantize
 # from dynamic_conv import Dynamic_conv2d
 
 
@@ -36,7 +33,8 @@ class VGG_TUNABLE_THRESHOLD_tdbn(nn.Module):
         self.act_mode       = act_mode
         self.sub_act_mask   = sub_act_mask
         self.hoyer_type     = hoyer_type
-        self.start_spike_layer = start_spike_layer
+        # self.start_spike_layer = start_spike_layer
+        self.if_spike       = True if start_spike_layer == 0 else False 
         self.x_thr_scale    = x_thr_scale
         self.weight_quantize= weight_quantize
         self.pooling        = nn.MaxPool2d(kernel_size=2, stride=2) if pooling_type == 'max' else nn.AvgPool2d(kernel_size=2, stride=2)
@@ -98,23 +96,23 @@ class VGG_TUNABLE_THRESHOLD_tdbn(nn.Module):
             self.classifier = nn.Sequential(
                             nn.Linear((im_size//32)**2*512, 4096, bias=False),
                             # nn.Linear(512*7*7, 4096, bias=False),
-                            HoyerBiAct(hoyer_type='sum'),
+                            HoyerBiAct(hoyer_type='sum', x_thr_scale=self.x_thr_scale, if_spike=self.if_spike),
                             nn.Linear(4096, 4096, bias=False),
-                            HoyerBiAct(hoyer_type='sum'),
+                            HoyerBiAct(hoyer_type='sum', x_thr_scale=self.x_thr_scale, if_spike=self.if_spike),
                             nn.Linear(4096, labels, bias=False)
             )
         elif vgg_name!='VGG6' and dataset!='MNIST':
             self.classifier = nn.Sequential(
                             nn.Linear(2048, 4096, bias=False),
                             # SubBiAct(act_mode=self.act_mode, bit=1, act_size=(4096)) if self.sub_act_mask else ThrBiAct(act_mode=self.act_mode) ,
-                            HoyerBiAct(hoyer_type='sum'),
+                            HoyerBiAct(hoyer_type='sum', x_thr_scale=self.x_thr_scale, if_spike=self.if_spike),
                             # ThrBiAct(act_mode=self.act_mode) ,
                             # nn.ReLU(inplace=True),
                             #nn.Dropout(0.5),
                             nn.Linear(4096, 4096, bias=False),
                             # SubBiAct(act_mode=self.act_mode, bit=1, act_size=(4096)) if self.sub_act_mask else ThrBiAct(act_mode=self.act_mode) ,
                             # ThrBiAct(act_mode=self.act_mode) ,
-                            HoyerBiAct(hoyer_type='sum'),
+                            HoyerBiAct(hoyer_type='sum', x_thr_scale=self.x_thr_scale, if_spike=self.if_spike),
                             # nn.ReLU(inplace=True),
                             #nn.Dropout(0.5),
                             nn.Linear(4096, labels, bias=False)
@@ -245,7 +243,8 @@ class VGG_TUNABLE_THRESHOLD_tdbn(nn.Module):
                 out = out_prev/getattr(self.threshold, 't'+str(l))
                 # out = out_prev/torch.abs(getattr(self.threshold, 't'+str(l)))
                 # self.test_hoyer_thr[i] = self.get_hoyer_thr(out.clone().detach(), l)
-                out = self.features[l](out, epoch, self.min_thr_scale[i], self.max_thr_scale[i], self.x_thr_scale, l, self.start_spike_layer)
+                # out = self.features[l](out, epoch, self.min_thr_scale[i], self.max_thr_scale[i], self.x_thr_scale, l, self.start_spike_layer)
+                out = self.features[l](out)
 
                 # 3. x/hoyer_thr -> act
                 
@@ -297,6 +296,7 @@ class VGG_TUNABLE_THRESHOLD_tdbn(nn.Module):
                         #     mask[out<torch.max(out).clone().detach()] = 1.0
                         #     act_out += torch.sum(torch.abs(out*mask)).clone()
                 out_prev = self.dropout_conv(out)
+                # out_prev = out
                 # threshold_out.append(hoyer_thr)
                 self.threshold_out.append(self.threshold['t'+str(l)].clone().detach())
                 i += 1
@@ -317,8 +317,8 @@ class VGG_TUNABLE_THRESHOLD_tdbn(nn.Module):
                 out = out_prev/getattr(self.threshold, 't'+str(prev+l))
                 # out = out_prev/torch.abs(getattr(self.threshold, 't'+str(prev+l)))
                 # self.test_hoyer_thr[i] = self.get_hoyer_thr(out.clone().detach(), prev+l)
-                out = self.classifier[l](out, epoch, self.min_thr_scale[i], self.max_thr_scale[i], self.x_thr_scale, prev+l, self.start_spike_layer)
-
+                # out = self.classifier[l](out, epoch, self.min_thr_scale[i], self.max_thr_scale[i], self.x_thr_scale, prev+l, self.start_spike_layer)
+                out = self.classifier[l](out)
                 # 3. x/hoyer_thr -> act
                 # out = self.relu(out_prev)
                 # self.test_hoyer_thr[i] = self.get_hoyer_thr(out.clone().detach(), prev+l)
@@ -356,7 +356,8 @@ class VGG_TUNABLE_THRESHOLD_tdbn(nn.Module):
                         #     mask[out<torch.max(out).clone().detach()] = 1.0
                         #     act_out += torch.sum(torch.abs(out*mask)).clone()
                         
-                out_prev = self.dropout_linear(out)
+                # out_prev = self.dropout_linear(out)
+                out_prev = out
                 # threshold_out.append(hoyer_thr)
                 self.threshold_out.append(self.threshold['t'+str(prev+l)].clone().detach())
                 i += 1
@@ -434,13 +435,13 @@ class VGG_TUNABLE_THRESHOLD_tdbn(nn.Module):
                                 # nn.AvgPool2d(kernel_size=2, stride=2),
                                 self.pooling,
                                 nn.BatchNorm2d(x) if self.bn_type == 'bn' else tdBatchNorm(x),
-                                HoyerBiAct(num_features=x, hoyer_type=self.act_mode)
+                                HoyerBiAct(num_features=x, hoyer_type=self.act_mode, x_thr_scale=self.x_thr_scale, if_spike=self.if_spike)
                                 # SubBiAct(act_mode=self.act_mode, bit=1, act_size=(x, act_size, act_size)) if self.sub_act_mask else ThrBiAct(act_mode=self.act_mode) 
                                 ]
                     elif self.pool_pos == 'after_relu':
                         layers += [conv2d,
                                 nn.BatchNorm2d(x) if self.bn_type == 'bn' else tdBatchNorm(x),
-                                HoyerBiAct(num_features=x, hoyer_type=self.act_mode),
+                                HoyerBiAct(num_features=x, hoyer_type=self.act_mode, x_thr_scale=self.x_thr_scale, if_spike=self.if_spike),
                                 # SubBiAct(act_mode=self.act_mode, bit=1, act_size=(x, act_size, act_size)) if self.sub_act_mask else ThrBiAct(act_mode=self.act_mode) ,
                                 self.pooling,
                                 # nn.AvgPool2d(kernel_size=2, stride=2)
@@ -449,7 +450,7 @@ class VGG_TUNABLE_THRESHOLD_tdbn(nn.Module):
                 else:
                     layers += [conv2d,
                             nn.BatchNorm2d(x) if self.bn_type == 'bn' else tdBatchNorm(x),
-                            HoyerBiAct(num_features=x, hoyer_type=self.act_mode),
+                            HoyerBiAct(num_features=x, hoyer_type=self.act_mode, x_thr_scale=self.x_thr_scale, if_spike=self.if_spike),
                             # SubBiAct(act_mode=self.act_mode, bit=1, act_size=(x, act_size, act_size)) if self.sub_act_mask else ThrBiAct(act_mode=self.act_mode)
                             ]
                 #layers += [nn.Dropout(self.dropout)]           
@@ -460,7 +461,7 @@ class VGG_TUNABLE_THRESHOLD_tdbn(nn.Module):
 
             layers += [self.pooling, 
                     nn.BatchNorm2d(x) if self.bn_type == 'bn' else tdBatchNorm(x),
-                    HoyerBiAct(num_features=x, hoyer_type=self.act_mode)]
+                    HoyerBiAct(num_features=x, hoyer_type=self.act_mode, x_thr_scale=self.x_thr_scale, if_spike=self.if_spike)]
         return nn.Sequential(*layers)
 
 def model_equivalence(model_1,
