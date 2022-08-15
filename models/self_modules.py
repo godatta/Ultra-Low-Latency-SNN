@@ -16,12 +16,14 @@ class HoyerBiAct(nn.Module):
         track_running_stats (bool): same with nn.BatchNorm2d
     """
     _version = 2
-    __constants__ = ["track_running_stats", "momentum", "eps", "num_features", "hoyer_type"]
+    __constants__ = ["track_running_stats", "momentum", "eps", "num_features", "hoyer_type", "x_thr_scale", "if_spike"]
     num_features: int
     eps: float
     momentum: float
     hoyer_type: str
     track_running_stats: bool
+    x_thr_scale: float
+    if_spike: bool
     # hoyer_type is args.act_mode
     def __init__(self, num_features=1, eps=1e-05, momentum=0.1, hoyer_type='sum',track_running_stats: bool = True, device=None, dtype=None, \
         min_thr_scale=0.0, max_thr_scale=1.0, x_thr_scale=1.0, if_spike=True):
@@ -32,11 +34,14 @@ class HoyerBiAct(nn.Module):
         self.momentum       = momentum
         self.hoyer_type     = hoyer_type
         self.track_running_stats = track_running_stats
-        # self.threshold      = nn.Parameter(torch.tensor(1.0))
+        self.threshold      = nn.Parameter(torch.tensor(1.0))
         self.min_thr_scale  = min_thr_scale
         self.max_thr_scale  = max_thr_scale
         self.x_thr_scale    = x_thr_scale
-        self.if_spike       = if_spike
+        self.if_spike       = if_spike  
+        # self.register_buffer('x_thr_scale', torch.tensor(x_thr_scale))
+        # self.register_buffer('if_spike', torch.tensor(if_spike))
+             
 
         # self.running_hoyer_thr = 0.0 if hoyer_type != 'cw' else torch.zeros(num_features).cuda()
         if self.track_running_stats:
@@ -59,9 +64,11 @@ class HoyerBiAct(nn.Module):
 
     def forward(self, input):
         # calculate running estimates
-        # input /= self.threshold
+        input = input / self.threshold
+        # input = torch.clamp(input, min=0.0, max=1.0)
         if self.training:
             clamped_input = torch.clamp((input).clone().detach(), min=0.0, max=1.0)
+            # clamped_input = input.clone().detach()
             if self.hoyer_type == 'sum':
                 hoyer_thr = torch.sum((clamped_input)**2) / torch.sum(torch.abs(clamped_input))
                 # if torch.sum(torch.abs(clamped_input)) > 0:
@@ -93,14 +100,14 @@ class HoyerBiAct(nn.Module):
             # print('running_hoyer_thr: {}'.format(self.running_hoyer_thr))
             
         # 
-        input = Spike_func.apply(input, hoyer_thr, self.x_thr_scale, self.hoyer_type, self.if_spike)
+        out = Spike_func.apply(input, hoyer_thr, self.x_thr_scale, self.hoyer_type, self.if_spike)
         # input = Spike_func_with_thr.apply(input, hoyer_thr, self.x_thr_scale, self.hoyer_type, self.if_spike, self.threshold)
         # input = Spike_func.apply(input, hoyer_thr, x_thr_scale, self.hoyer_type, (layer_index>=13 and layer_index<=39))
-        return input
+        return out
 
     def extra_repr(self):
         return (
-            "{num_features}, eps={eps}, momentum={momentum}, hoyer_type={hoyer_type}, "
+            "{num_features}, eps={eps}, momentum={momentum}, hoyer_type={hoyer_type}, x_thr_scale={x_thr_scale}, if_spike={if_spike}, "
             "track_running_stats={track_running_stats}".format(**self.__dict__)
         )
     def _load_from_state_dict(
@@ -250,55 +257,6 @@ class HoyerBiAct(nn.Module):
 #             error_msgs,
 #         )
 
-
-class Spike_func_with_thr(torch.autograd.Function):
-    """
-    Here we use the piecewise-linear surrogate gradient as was done
-    in Bellec et al. (2018).
-    """
-    @staticmethod
-    def forward(ctx, input, hoyer_thr, x_thr_scale=1.0, hoyer_type='sum', if_spike=True, threshold=1.0):
-        ctx.save_for_backward(input)
-        input /= threshold
-        out = torch.clamp(input, min=0.0, max=1.0)
-        # out = input
-        # if torch.sum(torch.abs(out)) > 0:
-        #     hoyer_thr = torch.sum((out)**2) / torch.sum(torch.abs(out))
-        # else:
-        #     hoyer_thr = 1.0
-        ctx.if_spike = if_spike
-        ctx.threshold = threshold
-        # print('input shape: {}, hoyer thr shape: {}, x_thr_scale: {}'.format(input.shape, hoyer_thr, x_thr_scale))
-        if hoyer_type != 'cw':
-            if if_spike:
-                out[out < x_thr_scale*hoyer_thr] = 0.0
-            # print('out shape: {}, x scale: {}, hoyer_thr: {}'.format(out.shape, x_thr_scale, hoyer_thr))
-            out[out >= x_thr_scale*hoyer_thr] = 1.0
-        else:
-            if if_spike:
-                out[out<x_thr_scale*hoyer_thr[None, :, None, None]] = 0.0
-            out[out>=x_thr_scale*hoyer_thr[None, :, None, None]] = 1.0 
-            # out[out<0.1*x_thr_scale*hoyer_thr[None, :, None, None]] = 0.0
-            # out[out>=0.9*x_thr_scale*hoyer_thr[None, :, None, None]] = 1.0 
-                    
-        return out
-
-    @staticmethod
-    def backward(ctx, grad_output):
-        
-        input,  = ctx.saved_tensors
-        grad_input = grad_output.clone()
-        grad_inp = torch.zeros_like(input).cuda()
-
-        grad_inp[input > 0] = 1.0
-        # only for
-        grad_inp[input > 2.0] = 0.0
-
-        grad_scale = 0.5 if ctx.if_spike else 1.0
-    
-
-        return grad_scale*grad_inp*grad_input/ctx.threshold, None, None, None, None, grad_scale*grad_inp*grad_input*(-1*input)/((ctx.threshold)**2)
-
 class Spike_func(torch.autograd.Function):
     """
     Here we use the piecewise-linear surrogate gradient as was done
@@ -340,7 +298,8 @@ class Spike_func(torch.autograd.Function):
         # only for
         grad_inp[input > 2.0] = 0.0
 
-        grad_scale = 0.5 if ctx.if_spike else 1.0
+        # grad_scale = 0.5 if ctx.if_spike else 1.0
+        grad_scale = 0.5
     
 
         return grad_scale*grad_inp*grad_input, None, None, None, None

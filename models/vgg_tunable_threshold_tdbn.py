@@ -22,7 +22,7 @@ cfg = {
 class VGG_TUNABLE_THRESHOLD_tdbn(nn.Module):
     def __init__(self, vgg_name='VGG16', labels=10, dataset = 'CIFAR10', kernel_size=3, linear_dropout=0.1, conv_dropout=0.1, default_threshold=1.0, \
         net_mode='ori', hoyer_type='mean', act_mode = 'mean', bn_type='bn', start_spike_layer=50, conv_type='ori', pool_pos='after_relu', sub_act_mask=False, \
-        x_thr_scale=1.0, pooling_type='max', weight_quantize=1, im_size=224):
+        x_thr_scale=1.0, pooling_type='max', weight_quantize=0, im_size=224):
         super(VGG_TUNABLE_THRESHOLD_tdbn, self).__init__()
         
         self.dataset        = dataset
@@ -41,7 +41,7 @@ class VGG_TUNABLE_THRESHOLD_tdbn(nn.Module):
         self.features       = self._make_layers(cfg[vgg_name])
         self.dropout_conv   = nn.Dropout(conv_dropout)
         self.dropout_linear = nn.Dropout(linear_dropout)
-        self.relu = nn.ReLU(inplace=True)
+        # self.relu = nn.ReLU(inplace=True)
         
         self.test_hoyer_thr = torch.tensor([0.0]*15)
         self.threshold_out  = []
@@ -137,17 +137,18 @@ class VGG_TUNABLE_THRESHOLD_tdbn(nn.Module):
                             #nn.Dropout(0.5),
                             nn.Linear(4096, labels, bias=False)
                             )
-        for l in range(len(self.features)):
-            if isinstance(self.features[l], (ThrBiAct, SubBiAct, HoyerBiAct)):
-                self.threshold['t'+str(l)] 	= nn.Parameter(torch.tensor(default_threshold))
-                #percentile['t'+str(l)]  = nn.Parameter(torch.ones(9))
-        prev = len(self.features)
-        for l in range(len(self.classifier)-1):#-1
-            if isinstance(self.classifier[l], (ThrBiAct, SubBiAct, HoyerBiAct)):
-                self.threshold['t'+str(prev+l)]	= nn.Parameter(torch.tensor(default_threshold))
-                #percentile['t'+str(prev+l)]  = nn.Parameter(torch.ones(9))
+        # for l in range(len(self.features)):
+        #     if isinstance(self.features[l], (ThrBiAct, SubBiAct, HoyerBiAct)):
+        #         self.threshold['t'+str(l)] 	= nn.Parameter(torch.tensor(default_threshold))
+        #         #percentile['t'+str(l)]  = nn.Parameter(torch.ones(9))
+        # prev = len(self.features)
+        # for l in range(len(self.classifier)-1):#-1
+        #     if isinstance(self.classifier[l], (ThrBiAct, SubBiAct, HoyerBiAct)):
+        #         self.threshold['t'+str(prev+l)]	= nn.Parameter(torch.tensor(default_threshold))
+        #         #percentile['t'+str(prev+l)]  = nn.Parameter(torch.ones(9))        
+        # self.threshold 	= nn.ParameterDict(self.threshold)
+        
         # print(self.features)
-        self.threshold 	= nn.ParameterDict(self.threshold)
         #self.epoch = nn.parameter(epoch)
         #self.epoch.requires_grad = False
         #self.cur = nn.ParameterDict(percentile)
@@ -240,11 +241,12 @@ class VGG_TUNABLE_THRESHOLD_tdbn(nn.Module):
                 # out = self.relu(out_prev)
                 # 2. x/thr -> act
                 # out = out_prev
-                out = out_prev/getattr(self.threshold, 't'+str(l))
+                # out = out_prev/getattr(self.threshold, 't'+str(l))
+                # out = Clamp_func.apply(out_prev)
                 # out = out_prev/torch.abs(getattr(self.threshold, 't'+str(l)))
                 # self.test_hoyer_thr[i] = self.get_hoyer_thr(out.clone().detach(), l)
                 # out = self.features[l](out, epoch, self.min_thr_scale[i], self.max_thr_scale[i], self.x_thr_scale, l, self.start_spike_layer)
-                out = self.features[l](out)
+                out = self.features[l](out_prev)
 
                 # 3. x/hoyer_thr -> act
                 
@@ -298,7 +300,7 @@ class VGG_TUNABLE_THRESHOLD_tdbn(nn.Module):
                 out_prev = self.dropout_conv(out)
                 # out_prev = out
                 # threshold_out.append(hoyer_thr)
-                self.threshold_out.append(self.threshold['t'+str(l)].clone().detach())
+                # self.threshold_out.append(self.threshold['t'+str(l)].clone().detach())
                 i += 1
 
         out_prev = out_prev.view(out_prev.size(0), -1)
@@ -314,11 +316,12 @@ class VGG_TUNABLE_THRESHOLD_tdbn(nn.Module):
                 # out = self.relu(out_prev)
                 # 2. x/thr -> act
                 # out = out_prev
-                out = out_prev/getattr(self.threshold, 't'+str(prev+l))
+                # out = out_prev/getattr(self.threshold, 't'+str(prev+l))
+                # out_prev = Clamp_func.apply(out_prev)
                 # out = out_prev/torch.abs(getattr(self.threshold, 't'+str(prev+l)))
                 # self.test_hoyer_thr[i] = self.get_hoyer_thr(out.clone().detach(), prev+l)
                 # out = self.classifier[l](out, epoch, self.min_thr_scale[i], self.max_thr_scale[i], self.x_thr_scale, prev+l, self.start_spike_layer)
-                out = self.classifier[l](out)
+                out = self.classifier[l](out_prev)
                 # 3. x/hoyer_thr -> act
                 # out = self.relu(out_prev)
                 # self.test_hoyer_thr[i] = self.get_hoyer_thr(out.clone().detach(), prev+l)
@@ -356,16 +359,16 @@ class VGG_TUNABLE_THRESHOLD_tdbn(nn.Module):
                         #     mask[out<torch.max(out).clone().detach()] = 1.0
                         #     act_out += torch.sum(torch.abs(out*mask)).clone()
                         
-                # out_prev = self.dropout_linear(out)
-                out_prev = out
+                out_prev = self.dropout_linear(out)
+                # out_prev = out
                 # threshold_out.append(hoyer_thr)
-                self.threshold_out.append(self.threshold['t'+str(prev+l)].clone().detach())
+                # self.threshold_out.append(self.threshold['t'+str(prev+l)].clone().detach())
                 i += 1
         # print(self.classifier[l+1])
         out = self.classifier[l+1](out_prev)
 
         # return out, act_out
-        return out, self.threshold_out, self.relu_batch_num, act_out #self.layer_output
+        return out, act_out #self.layer_output
         #out = self.features(x)
         #out = out.view(out.size(0), -1)
         #out = self.classifier(out)

@@ -2,6 +2,8 @@ import argparse
 
 from models.vgg_tunable_threshold_tdbn import VGG_TUNABLE_THRESHOLD_tdbn
 from models.birealnet import resnet18, resnet20, resnet34_cifar
+from models.self_modules import HoyerBiAct
+from models.vgg_tunable_threshold_tdbn_imagenet import VGG_TUNABLE_THRESHOLD_tdbn_imagenet
 # from models.resnet_tunable_threshold import *
 import torch
 import torch.nn as nn
@@ -126,12 +128,27 @@ def compute_mac(model, dataset):
     print('{:e}'.format(sum(macs)))
     exit()
 
+total_feat_out = []
+all_layers_act = torch.tensor([0.0, 0.0, 0.0, 0.0])
+
+def cal_act_stas(x, min_thr_scale, max_thr_scale, thr):
+    min = (x.clone().detach()<=min_thr_scale*thr).sum()
+    max = (x.clone().detach()>=max_thr_scale*thr).sum()
+    total = x.view(-1).shape[0]
+    return torch.tensor([min, total-min-max, max, total])
+
+# 定义 forward hook function
+def hook_fn_forward(module, input, output):
+    # print(module, torch.max(output))
+    # print((input[0]).shape)
+    global all_layers_act
+    all_layers_act += cal_act_stas(output, 0.0, 1.0, 1.0)
+
 def train(epoch, loader):
 
     global learning_rate
     
     losses = AverageMeter('Loss')
-    thr_losses = AverageMeter('Loss')
     act_losses = AverageMeter('Loss')
     total_losses = AverageMeter('Loss')
     top1   = AverageMeter('Acc@1')
@@ -161,14 +178,16 @@ def train(epoch, loader):
 
             if torch.cuda.is_available() and args.gpu:
                 data, target = data.cuda(), target.cuda()
-                    
+            
+            # adjust_learning_rate(optimizer=optimizer, epoch=epoch, iteration=batch_idx, num_iter=len(loader))
             optimizer.zero_grad()
             #output, _ = model(data)
             # if act_type == 'relu':
             #     output, model_thr, relu_batch_num, act_out, thr_out = model(data, epoch)
             # else:
             # output, model_thr, relu_batch_num, act_out = model(data, epoch)
-            output, model_thr, relu_batch_num, act_out = model(data)
+            # torch.autograd.set_detect_anomaly(True)
+            output, act_out = model(data)
             loss = F.cross_entropy(output,target)
             #make_dot(loss).view()
 
@@ -179,15 +198,13 @@ def train(epoch, loader):
             # if act_type == 'relu':
             #     thr_loss = thr_decay*thr_out
             #     total_loss += thr_loss
+            # with torch.autograd.detect_anomaly():
             total_loss.backward(inputs = list(model.parameters()))
             
             optimizer.step()       
             
             losses.update(loss.item(),data_size)
             act_losses.update(act_loss, data_size)
-            # if act_type == 'relu':
-            #     thr_losses.update(thr_loss, data_size)
-            # reg_losses.update(reg_loss, data_size)
             total_losses.update(total_loss.item(), data_size)
 
             prec1, prec5 = accuracy(output, target, topk=(1, 5))
@@ -200,18 +217,21 @@ def train(epoch, loader):
             top1.update(prec1.item(), data_size)
             top5.update(prec5.item(), data_size)
 
-            relu_total_num += relu_batch_num
+            if use_hook and local_rank==0:
+                global all_layers_act
+                relu_total_num += all_layers_act
+                all_layers_act = torch.tensor([0.0, 0.0, 0.0, 0.0])
+            # relu_total_num += relu_batch_num
             test_hoyer_thr += model.test_hoyer_thr if gpu_nums == 1 else model.module.test_hoyer_thr
             # torch.cuda.empty_cache()
             if local_rank==0 and ((epoch == 1 and batch_idx < 5) or (dataset == 'IMAGENET' and batch_idx%100==1)):
-                f.write('\nbatch: {}, train_loss: {:.4f}, act_loss: {:.4f}, thr_loss: {:.4f}, total_train_loss: {:.4f} '.format(
+                f.write('\nbatch: {}, train_loss: {:.4f}, act_loss: {:.4f}, total_train_loss: {:.4f} '.format(
                 batch_idx,
                 losses.avg,
                 act_losses.avg,
-                thr_losses.avg,
                 total_losses.avg,
                 ))
-                f.write('top1_acc: {:.4f}, top5_acc: {:.4f}, output 0: {:.2f}%, relu: {:.2f}%, output threshold: {:.2f}%, time: {}'.format(
+                f.write('top1_acc: {:.2f}%, top5_acc: {:.2f}%, output 0: {:.2f}%, relu: {:.2f}%, output threshold: {:.2f}%, time: {}'.format(
                 top1.avg,
                 top5.avg,
                 relu_total_num[0]/relu_total_num[-1]*100,
@@ -231,12 +251,19 @@ def train(epoch, loader):
     # writer.add_scalar('Relu/less_eq_0', relu_total_num[0]/relu_total_num[-1]*100, epoch)
     # writer.add_scalar('Relu/between_0_thr', relu_total_num[1]/relu_total_num[-1]*100, epoch)
     # writer.add_scalar('Relu/laeger_eq_thr', relu_total_num[2]/relu_total_num[-1]*100, epoch)
+    
     if local_rank == 0:
+        nameed_params = model.named_parameters() if gpu_nums == 1 else model.module.named_parameters()
+        model_thrs = []
+        for name, m in nameed_params:
+            if 'threshold' in name:
+                model_thrs.append(m.item())
+        if model_thrs:
+            model_thr = model_thrs
         if use_wandb:
             wandb.log({
                 'loss': losses.avg,
                 'loss_act': act_losses.avg,
-                'loss_thr': thr_losses.avg,
                 'total_loss': total_losses.avg
             }, step=epoch)
             # for i in range(len(model.test_hoyer_thr)):
@@ -246,17 +273,16 @@ def train(epoch, loader):
             wandb.log({'Relu_less_eq_0': relu_total_num[0]/relu_total_num[-1]*100}, step=epoch)
             wandb.log({'Relu_between_0_thr': relu_total_num[1]/relu_total_num[-1]*100}, step=epoch)
             wandb.log({'Relu_laeger_eq_thr': relu_total_num[2]/relu_total_num[-1]*100}, step=epoch)
-        f.write('\n The threshold in ann is: {}'.format([p.data for p in model_thr]))
-        f.write('\nEpoch: {}, lr: {:.1e}, train_loss: {:.4f}, act_loss: {:.4f}, thr_loss: {:.4f}, total_train_loss: {:.4f} '.format(
+        f.write('\n The threshold in ann is: {}'.format([round(p, 4) for p in model_thr]))
+        f.write('\nEpoch: {}, lr: {:.1e}, train_loss: {:.4f}, act_loss: {:.4f}, total_train_loss: {:.4f} '.format(
                 epoch,
                 learning_rate,
                 losses.avg,
                 act_losses.avg,
-                thr_losses.avg,
                 total_losses.avg,
                 )
             )
-        f.write('top1_acc: {:.4f}, top5_acc: {:.4f}, output 0: {:.2f}%, relu: {:.2f}%, output threshold: {:.2f}%, time: {}'.format(
+        f.write('top1_acc: {:.2f}%, top5_acc: {:.2f}%, output 0: {:.2f}%, relu: {:.2f}%, output threshold: {:.2f}%, time: {}'.format(
                 top1.avg,
                 top5.avg,
                 relu_total_num[0]/relu_total_num[-1]*100,
@@ -266,13 +292,120 @@ def train(epoch, loader):
                 )
             )
 
+def simple_train(epoch, loader):
+
+    global learning_rate
+    
+    losses = AverageMeter('Loss')
+    act_losses = AverageMeter('Loss')
+    total_losses = AverageMeter('Loss')
+    top1   = AverageMeter('Acc@1')
+    top5   = AverageMeter('Acc@5')
+    
+    if epoch in lr_interval:
+        for param_group in optimizer.param_groups:
+            param_group['lr'] = param_group['lr'] / lr_reduce
+            learning_rate = param_group['lr']
+
+    relu_total_num = torch.tensor([0.0, 0.0, 0.0, 0.0])
+    # test_hoyer_thr = torch.tensor([0.0]*15)
+    model.train() # this is impoetant, cannot remove
+    
+    with tqdm(loader, total=len(loader)) as t:
+        for batch_idx, (data, target) in enumerate(t):
+            if torch.cuda.is_available() and args.gpu:
+                data, target = data.cuda(), target.cuda()
+            
+            adjust_learning_rate(optimizer=optimizer, epoch=epoch, iteration=batch_idx, num_iter=len(loader))
+            optimizer.zero_grad()
+            output, act_out = model(data)
+            loss = F.cross_entropy(output,target)
+
+            data_size = data.size(0)
+            act_loss = hoyer_decay*act_out
+            total_loss = loss + act_loss
+            total_loss.backward(inputs = list(model.parameters()))
+            
+            optimizer.step()       
+            
+            losses.update(loss.item(),data_size)
+            act_losses.update(act_loss, data_size)
+            total_losses.update(total_loss.item(), data_size)
+
+            prec1, prec5 = accuracy(output, target, topk=(1, 5))
+            top1.update(prec1.item(), data_size)
+            top5.update(prec5.item(), data_size)
+
+            if use_hook and local_rank==0:
+                global all_layers_act
+                relu_total_num += all_layers_act
+                all_layers_act = torch.tensor([0.0, 0.0, 0.0, 0.0])
+            # relu_total_num += relu_batch_num
+            # test_hoyer_thr += model.test_hoyer_thr if gpu_nums == 1 else model.module.test_hoyer_thr
+            # torch.cuda.empty_cache()
+            if local_rank==0 and ((epoch == 1 and batch_idx < 5) or (dataset == 'IMAGENET' and batch_idx%100==1)):
+                f.write('\nbatch: {}, train_loss: {:.4f}, act_loss: {:.4f}, total_train_loss: {:.4f}, top1_acc: {:.2f}%, top5_acc: {:.2f}%, time: {}'.format(
+                batch_idx,
+                losses.avg,
+                act_losses.avg,
+                total_losses.avg,
+                top1.avg,
+                top5.avg,
+                datetime.timedelta(seconds=(datetime.datetime.now() - start_time).seconds)
+                ))
+                if use_hook and local_rank==0:
+                    f.write(', output 0: {:.2f}%, relu: {:.2f}%, output threshold: {:.2f}%, '.format(
+                    relu_total_num[0]/relu_total_num[-1]*100,
+                    relu_total_num[1]/relu_total_num[-1]*100,
+                    relu_total_num[2]/relu_total_num[-1]*100,
+                    ))
+    
+    if local_rank == 0:
+        nameed_params = model.named_parameters() if gpu_nums == 1 else model.module.named_parameters()
+        model_thrs = []
+        for name, m in nameed_params:
+            if 'threshold' in name:
+                model_thrs.append(m.item())
+        if model_thrs:
+            model_thr = model_thrs
+        if use_wandb:
+            wandb.log({
+                'loss': losses.avg,
+                'loss_act': act_losses.avg,
+                'total_loss': total_losses.avg
+            }, step=epoch)
+            # for i in range(len(model.test_hoyer_thr)):
+            #     wandb.log({f'hoyer_thr_{i}': test_hoyer_thr[i]/batch_idx}, step=epoch)
+            wandb.log({'training_acc': top1.avg}, step=epoch)
+            wandb.log({'top_5_acc': top5.avg}, step=epoch)
+            if use_hook and local_rank==0:
+                wandb.log({'Relu_less_eq_0': relu_total_num[0]/relu_total_num[-1]*100}, step=epoch)
+                wandb.log({'Relu_between_0_thr': relu_total_num[1]/relu_total_num[-1]*100}, step=epoch)
+                wandb.log({'Relu_laeger_eq_thr': relu_total_num[2]/relu_total_num[-1]*100}, step=epoch)
+        f.write('\n The threshold in ann is: {}'.format([round(p, 4) for p in model_thr]))
+        f.write('\nEpoch: {}, lr: {:.1e}, train_loss: {:.4f}, act_loss: {:.4f}, total_train_loss: {:.4f}, top1_acc: {:.2f}%, top5_acc: {:.2f}%, '.format(
+                epoch,
+                learning_rate,
+                losses.avg,
+                act_losses.avg,
+                total_losses.avg,
+                top1.avg,
+                top5.avg
+                ))
+        if use_hook and local_rank==0:
+            f.write('output 0: {:.2f}%, relu: {:.2f}%, output threshold: {:.2f}%, time: {}'.format(
+                    relu_total_num[0]/relu_total_num[-1]*100,
+                    relu_total_num[1]/relu_total_num[-1]*100,
+                    relu_total_num[2]/relu_total_num[-1]*100,
+                    datetime.timedelta(seconds=(datetime.datetime.now() - start_time).seconds)))
+
+
 def test(epoch, loader):
 
     losses = AverageMeter('Loss')
     top1   = AverageMeter('Acc@1')
     top5   = AverageMeter('Acc@5')
     act_losses = AverageMeter('Loss') 
-    thr_losses = AverageMeter('Loss')
     total_losses = AverageMeter('Loss')
     hoyer_thr_per_batch = []
 
@@ -296,7 +429,7 @@ def test(epoch, loader):
             # if get_scale and test_only:
             #     output, thresholds, relu_batch_num, act_out = model(data, -2)
             if test_only and get_layer_output and batch_idx < 100 and epoch == 1:
-                output, thresholds, relu_batch_num, act_out = model(data, -1)
+                output, act_out = model(data, -1)
                 for l in act_out.keys():
                     act_out[l] = act_out[l][act_out[l]>0]
                     act_out[l] = act_out[l][act_out[l]<1.0]
@@ -304,8 +437,8 @@ def test(epoch, loader):
                         total_output[l] = torch.tensor([])
                     total_output[l] = torch.cat((total_output[l], act_out[l].cpu()))
 
-            elif test_only and batch_idx <= 0 and epoch == 1:
-                output, thresholds, relu_batch_num, act_out = model(data, -1)
+            elif test_only and batch_idx <= 0 and epoch == 10:
+                output, act_out = model(data, -1)
                 # act_reg = 0.0
                 res = {}
                 total_net_output = torch.tensor([])
@@ -361,7 +494,7 @@ def test(epoch, loader):
                 #     output, thresholds, relu_batch_num, act_out, thr_out = model(data, epoch)
                 # else:
                 # output, thresholds, relu_batch_num, act_out = model(data, epoch)
-                output, thresholds, relu_batch_num, act_out = model(data)
+                output, act_out = model(data)
 
             #output, thresholds = model(data)
             #dis.extend(act)
@@ -382,8 +515,6 @@ def test(epoch, loader):
 
             act_losses.update(act_loss, data_size)
             losses.update(loss.item(), data_size)
-            # if act_type == 'relu':
-            #     thr_losses.update(thr_loss, data_size)
             total_losses.update(total_loss.item(), data_size)
             # if act_type == 'relu':
             #     thr_loss = thr_decay*thr_out
@@ -396,8 +527,11 @@ def test(epoch, loader):
             # top1.update(correct.item()/data_size, data_size)
             top1.update(prec1.item(), data_size)
             top5.update(prec5.item(), data_size)
-
-            relu_total_num += relu_batch_num
+            if use_hook and local_rank==0:
+                global all_layers_act
+                relu_total_num += all_layers_act
+                all_layers_act = torch.tensor([0.0, 0.0, 0.0, 0.0])
+            # relu_total_num += relu_batch_num
             test_hoyer_thr += model.test_hoyer_thr if gpu_nums == 1 else model.module.test_hoyer_thr
         #with open('percentiles_resnet20_cifar100.json','w') as f:
         #    json.dump(percentiles, f)
@@ -443,16 +577,15 @@ def test(epoch, loader):
             if not args.dont_save and not test_only:
                 torch.save(state,filename)
         #dis = np.array(dis)
-        f.write('\nEpoch: {}, best: {:.4f}, test_loss: {:.4f}, act_loss: {:.4f}, thr_loss: {:.4f}, total_test_loss: {:.4f}, '.format(
+        f.write('\nEpoch: {}, best: {:.2f}%, test_loss: {:.4f}, act_loss: {:.4f}, total_test_loss: {:.4f}, '.format(
             epoch,
             max_accuracy,
             losses.avg,
             act_losses.avg,
-            thr_losses.avg,
             total_losses.avg,
             )
         )
-        f.write('top1_acc: {:.4f}, top5_acc: {:.4f}, output 0: {:.2f}%, relu: {:.2f}%, output threshold: {:.2f}%, time: {}\n'.format(
+        f.write('top1_acc: {:.2f}%, top5_acc: {:.2f}%, output 0: {:.2f}%, relu: {:.2f}%, output threshold: {:.2f}%, time: {}\n'.format(
             top1.avg,
             top5.avg,
             relu_total_num[0]/relu_total_num[-1]*100,
@@ -464,10 +597,84 @@ def test(epoch, loader):
 
         f.write('\nThe hoyer thr in ann is: {}'.format([(p.data)/(batch_idx+1) for p in test_hoyer_thr]))
 
-        # f.write('\n Time: {}'.format(
-        #     datetime.timedelta(seconds=(datetime.datetime.now() - current_time).seconds)
-        #     )
-        # )
+def simple_test(epoch, loader):
+
+    losses = AverageMeter('Loss')
+    top1   = AverageMeter('Acc@1')
+    top5   = AverageMeter('Acc@5')
+    act_losses = AverageMeter('Loss') 
+    total_losses = AverageMeter('Loss')
+
+    with torch.no_grad():
+        model.eval()
+        total_loss = 0
+        global max_accuracy, start_time
+            
+        relu_total_num = torch.tensor([0.0, 0.0, 0.0, 0.0])
+
+        for batch_idx, (data, target) in enumerate(tqdm(loader)):
+            if torch.cuda.is_available() and args.gpu:
+                data, target = data.cuda(), target.cuda()
+            
+            output, act_out = model(data)
+            loss = F.cross_entropy(output,target)
+            data_size = data.size(0)
+            act_loss = hoyer_decay*act_out
+            total_loss = loss+act_loss
+
+            act_losses.update(act_loss, data_size)
+            losses.update(loss.item(), data_size)
+            total_losses.update(total_loss.item(), data_size)
+
+            prec1, prec5 = accuracy(output, target, topk=(1, 2 ))
+            top1.update(prec1.item(), data_size)
+            top5.update(prec5.item(), data_size)
+            if use_hook and local_rank==0:
+                global all_layers_act
+                relu_total_num += all_layers_act
+                all_layers_act = torch.tensor([0.0, 0.0, 0.0, 0.0])
+            # relu_total_num += relu_batch_num
+
+        if not test_only and use_wandb:
+            wandb.log({'test_acc': top1.avg}, step=epoch)
+
+        if (top1.avg>=max_accuracy):
+            max_accuracy = top1.avg
+            # if not test_only:
+            #     wandb.run.summary["best_accuracy"] = top1.avg
+            state = {
+                    'accuracy'      : max_accuracy,
+                    'epoch'         : epoch,
+                    'state_dict'    : model.state_dict() if gpu_nums==1 else model.module.state_dict(),
+                    'optimizer'     : optimizer.state_dict()
+            }
+            try:
+                os.mkdir('./trained_models_ann/')
+            except OSError:
+                pass
+            
+            # filename = './trained_models_ann/'+identifier+ '_epoch_' + str(epoch) + '_' + str(max_accuracy) + '.pth'
+            filename = './trained_models_ann/'+identifier + '.pth'
+            if not args.dont_save and not test_only:
+                torch.save(state,filename)
+        #dis = np.array(dis)
+        f.write('\nEpoch: {}, best: {:.2f}%, test_loss: {:.4f}, act_loss: {:.4f}, total_test_loss: {:.4f}, top1_acc: {:.2f}%, top5_acc: {:.2f}%, '.format(
+            epoch,
+            max_accuracy,
+            losses.avg,
+            act_losses.avg,
+            total_losses.avg,
+            top1.avg,
+            top5.avg
+            )
+        )
+        if use_hook and local_rank==0:
+            f.write('output 0: {:.2f}%, relu: {:.2f}%, output threshold: {:.2f}%, time: {}\n'.format(
+                relu_total_num[0]/relu_total_num[-1]*100,
+                relu_total_num[1]/relu_total_num[-1]*100,
+                relu_total_num[2]/relu_total_num[-1]*100,
+                datetime.timedelta(seconds=(datetime.datetime.now() - start_time).seconds)
+                ))
 
 def visualize(loader, to_path, visual_type=['directly', 'grad_cam'], num_imgs=100):
 
@@ -596,6 +803,8 @@ if __name__ == '__main__':
     parser.add_argument('--qat',                    default=0,                  type=int,       help='how many bit to quantization aware training')
     parser.add_argument('--visualize',              action='store_true',                        help='visualize the attention map')
     parser.add_argument('--warmup',                 action='store_true',                        help='set lower initial learning rate to warm up the training')
+    parser.add_argument('--reg_thr',                action='store_true',                        help='if add weight decay for threshold')
+    parser.add_argument('--use_hook',               action='store_true',                        help='use hook to check the dist of the output of every layer')
 
     parser.add_argument('--nodes',                  default=1,                  type=int,       help='nodes')
     parser.add_argument('--rank',                   default=0,                  type=int,       help='ranking within the nodes')
@@ -656,6 +865,8 @@ if __name__ == '__main__':
     pooling_type    = args.pooling_type
     weight_quantize = args.weight_quantize
     qat             = args.qat
+    reg_thr         = args.reg_thr
+    use_hook        = args.use_hook
     gpu_nums        = (len(args.devices)+1) // 2
 
     if gpu_nums > 1:
@@ -730,14 +941,15 @@ if __name__ == '__main__':
         if im_size == None:
             im_size = 32
             transform_train = transforms.Compose([
-                              transforms.RandomCrop(32, padding=4),
+                              transforms.RandomCrop(32, padding=4), # this line can improve 2%
                               transforms.RandomHorizontalFlip(),
                               transforms.ToTensor(),
                               normalize])
         else:
             transform_train = transforms.Compose([
-                              transforms.Resize(im_size),
-                              transforms.RandomResizedCrop(im_size),
+                            #   transforms.Resize(im_size),
+                            #   transforms.RandomResizedCrop(im_size),
+                              transforms.RandomCrop(im_size, padding=4),
                               transforms.RandomHorizontalFlip(),
                               transforms.ToTensor(),
                               normalize])
@@ -765,17 +977,19 @@ if __name__ == '__main__':
             train_dataset    = datasets.ImageFolder(
                                 traindir,
                                 transforms.Compose([
+                                    transforms.Resize(256),
                                     transforms.RandomResizedCrop(224),
                                     transforms.RandomHorizontalFlip(),
                                     transforms.ToTensor(),
                                     normalize,
                                 ]))
         else:
+            crop_scale = 0.08
             train_dataset    = datasets.ImageFolder(
                                 traindir,
                                 transforms.Compose([
-                                    transforms.Resize(im_size),
-                                    transforms.RandomResizedCrop(im_size),
+                                    # new data augmentation
+                                    transforms.RandomResizedCrop(im_size, scale=(crop_scale, 1.0)),
                                     transforms.RandomHorizontalFlip(),
                                     transforms.ToTensor(),
                                     normalize,
@@ -833,12 +1047,19 @@ if __name__ == '__main__':
     else:
         train_sampler = DistributedSampler(train_dataset)
         test_sampler = DistributedSampler(test_dataset)
-        train_loader    = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=batch_size, num_workers=16, sampler=train_sampler)
-        test_loader     = torch.utils.data.DataLoader(dataset=test_dataset, batch_size=batch_size, num_workers=16, sampler=test_sampler)
+        # num_workers actually need to be set accroding to the cpu
+        train_loader    = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=batch_size, num_workers=2*gpu_nums, sampler=train_sampler)
+        test_loader     = torch.utils.data.DataLoader(dataset=test_dataset, batch_size=batch_size, num_workers=2*gpu_nums, sampler=test_sampler)
                 
-    if architecture[0:3].lower() == 'vgg':
+    if architecture[0:3].lower() == 'vgg' and dataset == 'CIFAR10':
         # act_type == 'tdbn'
         model = VGG_TUNABLE_THRESHOLD_tdbn(vgg_name=architecture, labels=labels, dataset=dataset, kernel_size=kernel_size,\
+            linear_dropout=linear_dropout, conv_dropout = conv_dropout, default_threshold=threshold,\
+            net_mode=net_mode, hoyer_type=hoyer_type, act_mode=act_mode, bn_type=bn_type, start_spike_layer=start_spike_layer,\
+            conv_type=conv_type, pool_pos=pool_pos, sub_act_mask=sub_act_mask, x_thr_scale=x_thr_scale, pooling_type=pooling_type, \
+            weight_quantize=weight_quantize, im_size=im_size)
+    elif architecture[0:3].lower() == 'vgg' and dataset == 'IMAGENET':
+        model = VGG_TUNABLE_THRESHOLD_tdbn_imagenet(vgg_name=architecture, labels=labels, dataset=dataset, kernel_size=kernel_size,\
             linear_dropout=linear_dropout, conv_dropout = conv_dropout, default_threshold=threshold,\
             net_mode=net_mode, hoyer_type=hoyer_type, act_mode=act_mode, bn_type=bn_type, start_spike_layer=start_spike_layer,\
             conv_type=conv_type, pool_pos=pool_pos, sub_act_mask=sub_act_mask, x_thr_scale=x_thr_scale, pooling_type=pooling_type, \
@@ -925,7 +1146,12 @@ if __name__ == '__main__':
     
     if torch.cuda.is_available() and args.gpu:
         model.cuda()
-
+    # use hook to check the dist of the output
+    if use_hook:
+        for name, module in model.named_modules():
+            if isinstance(module, HoyerBiAct):
+                # print('module name: {}'.format(name))
+                module.register_forward_hook(hook_fn_forward)
 
     all_parameters = model.parameters()
     weight_parameters = []
@@ -937,13 +1163,21 @@ if __name__ == '__main__':
     other_parameters = list(filter(lambda p: id(p) not in weight_parameters_id, all_parameters))
 
     if optimizer == 'SGD':
-        optimizer = optim.SGD(model.parameters(), lr=learning_rate, momentum=momentum, weight_decay=weight_decay)
+        if reg_thr:
+            optimizer = optim.SGD(
+                [{'params' : other_parameters},
+                {'params' : weight_parameters, 'weight_decay' : weight_decay}],
+                lr=learning_rate,momentum=momentum)
+        else:
+            optimizer = optim.SGD(model.parameters(), lr=learning_rate, momentum=momentum, weight_decay=weight_decay)
     elif optimizer == 'Adam':
-        optimizer = optim.Adam(
-            [{'params' : other_parameters},
-            {'params' : weight_parameters, 'weight_decay' : args.weight_decay}],
-            lr=learning_rate,amsgrad=True)
-        # optimizer = optim.Adam(model.parameters(), lr=learning_rate, amsgrad=True, weight_decay=weight_decay)
+        if reg_thr:
+            optimizer = optim.Adam(
+                [{'params' : other_parameters},
+                {'params' : weight_parameters, 'weight_decay' : weight_decay}],
+                lr=learning_rate,amsgrad=True)
+        else:
+            optimizer = optim.Adam(model.parameters(), lr=learning_rate, amsgrad=True, weight_decay=weight_decay)
     elif optimizer == 'RMSProp':
         optimizer = optim.RMSprop(
             [{'params' : other_parameters},
@@ -1023,14 +1257,15 @@ if __name__ == '__main__':
     
         exit()
 
-
+    train_func = train if dataset == 'CIFAR10' else simple_train
+    test_func = test if dataset == 'CIFAR10' else simple_test
 
     for epoch in range(1, epochs+1):    
         start_time = datetime.datetime.now()
         if not test_only:
-            train(epoch, train_loader)
+            train_func(epoch, train_loader)
         if local_rank == 0:
-            test(epoch, test_loader)
+            test_func(epoch, test_loader)
         if test_only:
             break
     
@@ -1040,4 +1275,5 @@ if __name__ == '__main__':
 
     f.write('\n End on time: {}'.format(datetime.datetime.now()))      
     f.write('\n Highest accuracy: {:.4f}'.format(max_accuracy))
+    print(identifier)
 

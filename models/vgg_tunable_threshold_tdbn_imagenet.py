@@ -3,9 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import math
 from models.dynamic_conv import Dynamic_conv2d
-from models.self_modules import HoyerBiAct, ThrBiAct, SubBiAct
-# from dynamic_conv import Dynamic_conv2d
-
+from models.self_modules import HoyerBiAct
 
 cfg = {
     'VGG4' : [64, 'A', 128, 'A'],
@@ -32,7 +30,6 @@ class VGG_TUNABLE_THRESHOLD_tdbn_imagenet(nn.Module):
         self.act_mode       = act_mode
         self.sub_act_mask   = sub_act_mask
         self.hoyer_type     = hoyer_type
-        # self.start_spike_layer = start_spike_layer
         self.if_spike       = True if start_spike_layer == 0 else False 
         self.x_thr_scale    = x_thr_scale
         self.weight_quantize= weight_quantize
@@ -81,16 +78,10 @@ class VGG_TUNABLE_THRESHOLD_tdbn_imagenet(nn.Module):
         elif vgg_name!='VGG6' and dataset!='MNIST':
             self.classifier = nn.Sequential(
                             nn.Linear(2048, 4096, bias=False),
-                            # SubBiAct(act_mode=self.act_mode, bit=1, act_size=(4096)) if self.sub_act_mask else ThrBiAct(act_mode=self.act_mode) ,
                             HoyerBiAct(hoyer_type='sum', x_thr_scale=self.x_thr_scale, if_spike=self.if_spike),
-                            # ThrBiAct(act_mode=self.act_mode) ,
-                            # nn.ReLU(inplace=True),
                             #nn.Dropout(0.5),
                             nn.Linear(4096, 4096, bias=False),
-                            # SubBiAct(act_mode=self.act_mode, bit=1, act_size=(4096)) if self.sub_act_mask else ThrBiAct(act_mode=self.act_mode) ,
-                            # ThrBiAct(act_mode=self.act_mode) ,
                             HoyerBiAct(hoyer_type='sum', x_thr_scale=self.x_thr_scale, if_spike=self.if_spike),
-                            # nn.ReLU(inplace=True),
                             #nn.Dropout(0.5),
                             nn.Linear(4096, labels, bias=False)
                             )
@@ -114,22 +105,6 @@ class VGG_TUNABLE_THRESHOLD_tdbn_imagenet(nn.Module):
                             #nn.Dropout(0.5),
                             nn.Linear(4096, labels, bias=False)
                             )
-        for l in range(len(self.features)):
-            if isinstance(self.features[l], (ThrBiAct, SubBiAct, HoyerBiAct)):
-                self.threshold['t'+str(l)] 	= nn.Parameter(torch.tensor(default_threshold))
-                #percentile['t'+str(l)]  = nn.Parameter(torch.ones(9))
-        prev = len(self.features)
-        for l in range(len(self.classifier)-1):#-1
-            if isinstance(self.classifier[l], (ThrBiAct, SubBiAct, HoyerBiAct)):
-                self.threshold['t'+str(prev+l)]	= nn.Parameter(torch.tensor(default_threshold))
-                #percentile['t'+str(prev+l)]  = nn.Parameter(torch.ones(9))
-        # print(self.features)
-        self.threshold 	= nn.ParameterDict(self.threshold)
-        #self.epoch = nn.parameter(epoch)
-        #self.epoch.requires_grad = False
-        #self.cur = nn.ParameterDict(percentile)
-        #self.cur.requires_grad = False
-        
         self._initialize_weights2()
     
     def forward(self, x):   #######epoch
@@ -137,47 +112,34 @@ class VGG_TUNABLE_THRESHOLD_tdbn_imagenet(nn.Module):
         act_out = 0.0
         for l in range(len(self.features)):
             if isinstance(self.features[l], HoyerBiAct):
-                out_prev = out_prev/getattr(self.threshold, 't'+str(l))
+                
                 out_prev = self.features[l](out_prev)
-
                 if torch.sum(torch.abs(out_prev))>0: #  and l < self.start_spike_layer
+                    # out_copy = out_prev.clone()
+                    # act_out +=  (torch.sum(torch.abs(out_copy))**2 / torch.sum((out_copy)**2))
                     act_out +=  (torch.sum(torch.abs(out_prev))**2 / torch.sum((out_prev)**2)).clone()
-                    # if self.hoyer_type == 'mean':
-                    #     act_out += torch.mean(torch.sum(torch.abs(out_prev), dim=(1,2,3))**2 / torch.sum((out_prev)**2, dim=(1,2,3))).clone()
-                    # elif self.hoyer_type == 'sum':
-                    #     act_out +=  (torch.sum(torch.abs(out_prev))**2 / torch.sum((out_prev)**2)).clone()
-                    # elif self.hoyer_type == 'cw':
-                    #     hoyer_thr = torch.sum((out_prev)**2, dim=(0,2,3)) / torch.sum(torch.abs(out_prev), dim=(0,2,3))
-                    #     hoyer_thr = torch.nan_to_num(hoyer_thr, nan=1.0)
-                    #     act_out += torch.mean(hoyer_thr)
-  
                 out_prev = self.dropout_conv(out_prev)
             else:
                 out_prev = self.features[l](out_prev)
    
         out_prev = out_prev.view(out_prev.size(0), -1)
-        prev = len(self.features)
 
         for l in range(len(self.classifier)-1):
             if isinstance(self.classifier[l], nn.Linear):
                 out_prev = self.classifier[l](out_prev) #- getattr(self.threshold, 't'+str(prev+l))*epoch*1e-3
             
             if isinstance(self.classifier[l], HoyerBiAct):
-                out_prev = out_prev/getattr(self.threshold, 't'+str(prev+l))
-                out_prev = self.classifier[l](out_prev)
                 
+                out_prev = self.classifier[l](out_prev)  
                 if torch.sum(torch.abs(out_prev))>0: # and prev+l < self.start_spike_layer
-                    act_out +=  (torch.sum(torch.abs(out_prev))**2 / torch.sum((out_prev)**2)).clone()
-                    # if self.hoyer_type == 'mean':
-                    #     act_out += (torch.mean(torch.sum(torch.abs(out_prev), dim=1)**2 / torch.sum((out_prev)**2, dim=1))).clone()
-                    # elif self.hoyer_type == 'sum' or self.hoyer_type == 'cw':
-                    #     act_out +=  (torch.sum(torch.abs(out_prev))**2 / torch.sum((out_prev)**2)).clone()
-                        
+                    # out_copy = out_prev.clone()
+                    # act_out +=  (torch.sum(torch.abs(out_copy))**2 / torch.sum((out_copy)**2))    
+                    act_out +=  (torch.sum(torch.abs(out_prev))**2 / torch.sum((out_prev)**2)).clone() 
                 out_prev = self.dropout_linear(out_prev)
 
         out = self.classifier[l+1](out_prev)
 
-        return out, [], [], act_out #self.layer_output
+        return out, act_out #self.layer_output
 
 
     def _initialize_weights(self):
@@ -236,28 +198,22 @@ class VGG_TUNABLE_THRESHOLD_tdbn_imagenet(nn.Module):
                     if self.pool_pos == 'before_relu':
                         act_size //= 2
                         layers += [conv2d,
-                                # nn.AvgPool2d(kernel_size=2, stride=2),
                                 self.pooling,
                                 nn.BatchNorm2d(x),
                                 HoyerBiAct(num_features=x, hoyer_type=self.act_mode, x_thr_scale=self.x_thr_scale, if_spike=self.if_spike)
-                                # SubBiAct(act_mode=self.act_mode, bit=1, act_size=(x, act_size, act_size)) if self.sub_act_mask else ThrBiAct(act_mode=self.act_mode) 
                                 ]
                     elif self.pool_pos == 'after_relu':
                         layers += [conv2d,
                                 nn.BatchNorm2d(x),
                                 HoyerBiAct(num_features=x, hoyer_type=self.act_mode, x_thr_scale=self.x_thr_scale, if_spike=self.if_spike),
-                                # SubBiAct(act_mode=self.act_mode, bit=1, act_size=(x, act_size, act_size)) if self.sub_act_mask else ThrBiAct(act_mode=self.act_mode) ,
                                 self.pooling,
-                                # nn.AvgPool2d(kernel_size=2, stride=2)
                                 ]
                         act_size //= 2
                 else:
                     layers += [conv2d,
                             nn.BatchNorm2d(x),
                             HoyerBiAct(num_features=x, hoyer_type=self.act_mode, x_thr_scale=self.x_thr_scale, if_spike=self.if_spike),
-                            # SubBiAct(act_mode=self.act_mode, bit=1, act_size=(x, act_size, act_size)) if self.sub_act_mask else ThrBiAct(act_mode=self.act_mode)
                             ]
-                #layers += [nn.Dropout(self.dropout)]           
                 in_channels = x
         if self.dataset == 'IMAGENET':
             layers.pop()

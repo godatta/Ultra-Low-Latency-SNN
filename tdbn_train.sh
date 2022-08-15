@@ -1,21 +1,23 @@
 # 1.
-# python ann.py --dataset CIFAR10 --batch_size 128 --im_size 32 --architecture VGG16 \
+# python ann.py --dataset CIFAR10 --batch_size 128 --architecture VGG16 \
 # --learning_rate 1e-4 --epochs 400 --lr_interval '0.60 0.80 0.90' --lr_reduce 5 --relu_threshold 1.0 \
 # --optimizer Adam --weight_decay 0.0001 --momentum 0.95 --amsgrad True --devices 0 --seed 0 --linear_dropout 0.1 --conv_dropout 0.1 \
-# --hoyer_decay 1e-8 --net_mode 'ori' --log --pool_pos 'before_relu' \
-# --act_mode 'cw' --bn_type 'bn' --hoyer_type 'sum' --start_spike_layer 0 --x_thr_scale 0.618 --weight_quantize 0 \
-# --description 'test if can mergr thr to hoyeract' 
+# --hoyer_decay 1e-8 --net_mode 'ori' --pool_pos 'before_relu' --log --use_wandb --use_hook \
+# --act_mode 'sum' --bn_type 'bn' --hoyer_type 'sum' --start_spike_layer 0 --x_thr_scale 0.618 --weight_quantize 0 \
+# --description 'test if data argument matter' 
 # --pretrained_ann 'trained_models_ann/ann_vgg16_cifar10_202206241620.pth'
 
 # 1. RESNET20 + CIFAR10
 python ann.py --dataset CIFAR10 --batch_size 128 --im_size 32 --architecture RESNET20 \
---learning_rate 1e-1 --epochs 600 --lr_interval '0.60 0.80 0.90' --lr_reduce 5 --relu_threshold 1.0 \
---optimizer SGD --weight_decay 0.0001 --momentum 0.9 --amsgrad True --devices 0 --seed 0 --linear_dropout 0 --conv_dropout 0 \
---hoyer_decay 1e-8 --net_mode 'ori' --log --pool_pos 'before_relu'  --use_wandb \
---act_mode 'cw' --bn_type 'bn' --hoyer_type 'sum' --start_spike_layer 0 --x_thr_scale 0.618 --weight_quantize 0 \
---description 'resnet20 test spike->conv->bn without dropout without threshold' 
+--learning_rate 1e-3 --epochs 400 --lr_interval '0.60 0.80 0.90' --lr_reduce 5 --relu_threshold 1.0 \
+--optimizer Adam --weight_decay 0.0001 --momentum 0.95 --amsgrad True --devices 0 --seed 0 --linear_dropout 0 --conv_dropout 0 \
+--hoyer_decay 1e-8 --net_mode 'ori' --pool_pos 'before_relu' --log --use_wandb --use_hook \
+--act_mode 'sum' --bn_type 'bn' --hoyer_type 'sum' --start_spike_layer 0 --x_thr_scale 1.0 --weight_quantize 0 \
+--description 'layer wise hoyer loss, resnet20 test spike->conv->bn without dropout, single layers as a block add final act add last layer hoyerloss, with new data augmentation'
 
-# 93.92 --use_wandb
+# --description 'resnet20 test spike->conv->bn without dropout, layer wise hoyer_reg ' 
+
+# 93.92 --use_wandb --use_reg --use_hook
 # 'trained_models_ann/ann_vgg16_cifar10_202206241620.pth'
 # 93.82
 # 'trained_models_ann/ann_vgg16_cifar10_202206250007.pth'

@@ -146,7 +146,7 @@ def train(epoch, loader):
                     
             optimizer.zero_grad()
 
-            output, _, _, act_out = model(data)
+            output, act_out = model(data)
             loss = F.cross_entropy(output,target)
 
             data_size = data.size(0)
@@ -189,21 +189,21 @@ def train(epoch, loader):
                     #     wandb.log({f'hoyer_thr_{i}': test_hoyer_thr[i]/batch_idx}, step=epoch)
                     wandb.log({'training_acc': top1.avg})
                     wandb.log({'top_5_acc': top5.avg})
-             
-        f.write('\nEpoch: {}, lr: {:.1e}, train_loss: {:.4f}, act_loss: {:.4f}, total_train_loss: {:.4f} '.format(
-                epoch,
-                learning_rate,
-                losses.avg,
-                act_losses.avg,
-                total_losses.avg,
+        if local_rank == 0:   
+            f.write('\nEpoch: {}, lr: {:.1e}, train_loss: {:.4f}, act_loss: {:.4f}, total_train_loss: {:.4f} '.format(
+                    epoch,
+                    learning_rate,
+                    losses.avg,
+                    act_losses.avg,
+                    total_losses.avg,
+                    )
                 )
-            )
-        f.write('top1_acc: {:.4f}%, top5_acc: {:.4f}%, time: {}'.format(
-                top1.avg,
-                top5.avg,
-                datetime.timedelta(seconds=(datetime.datetime.now() - start_time).seconds)
+            f.write('top1_acc: {:.2f}%, top5_acc: {:.2f}%, time: {}'.format(
+                    top1.avg,
+                    top5.avg,
+                    datetime.timedelta(seconds=(datetime.datetime.now() - start_time).seconds)
+                    )
                 )
-            )
 
 def test(epoch, loader):
 
@@ -228,7 +228,7 @@ def test(epoch, loader):
             if torch.cuda.is_available() and args.gpu:
                 data, target = data.cuda(), target.cuda()
 
-            output, _, _, act_out = model(data)
+            output, act_out = model(data)
 
             loss = F.cross_entropy(output,target)
             data_size = data.size(0)
@@ -278,7 +278,7 @@ def test(epoch, loader):
             total_losses.avg,
             )
         )
-        f.write('top1_acc: {:.4f}, top5_acc: {:.4f}, time: {}\n'.format(
+        f.write('top1_acc: {:.2f}, top5_acc: {:.2f}, time: {}\n'.format(
             top1.avg,
             top5.avg,
             datetime.timedelta(seconds=(datetime.datetime.now() - start_time).seconds)
@@ -412,6 +412,8 @@ if __name__ == '__main__':
     parser.add_argument('--qat',                    default=0,                  type=int,       help='how many bit to quantization aware training')
     parser.add_argument('--visualize',              action='store_true',                        help='visualize the attention map')
     parser.add_argument('--warmup',                 action='store_true',                        help='set lower initial learning rate to warm up the training')
+    parser.add_argument('--reg_thr',                action='store_true',                        help='if add weight decay for threshold')
+
 
     parser.add_argument('--nodes',                  default=1,                  type=int,       help='nodes')
     parser.add_argument('--rank',                   default=0,                  type=int,       help='ranking within the nodes')
@@ -472,6 +474,7 @@ if __name__ == '__main__':
     pooling_type    = args.pooling_type
     weight_quantize = args.weight_quantize
     qat             = args.qat
+    reg_thr         = args.reg_thr
     gpu_nums        = (len(args.devices)+1) // 2
 
     if gpu_nums > 1:
@@ -647,8 +650,8 @@ if __name__ == '__main__':
         train_loader    = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=batch_size, num_workers=2, shuffle=True)
         test_loader     = torch.utils.data.DataLoader(dataset=test_dataset, batch_size=batch_size, num_workers=2, shuffle=False)
     else:
-        train_sampler = DistributedSampler(train_dataset)
-        test_sampler = DistributedSampler(test_dataset)
+        train_sampler   = DistributedSampler(train_dataset)
+        test_sampler    = DistributedSampler(test_dataset)
         train_loader    = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=batch_size, num_workers=16, sampler=train_sampler)
         test_loader     = torch.utils.data.DataLoader(dataset=test_dataset, batch_size=batch_size, num_workers=16, sampler=test_sampler)
                 
@@ -660,8 +663,8 @@ if __name__ == '__main__':
             conv_type=conv_type, pool_pos=pool_pos, sub_act_mask=sub_act_mask, x_thr_scale=x_thr_scale, pooling_type=pooling_type, \
             weight_quantize=weight_quantize, im_size=im_size)
 
-
-    f.write('\n{}'.format(model))
+    if local_rank == 0:
+        f.write('\n{}'.format(model))
     
     #CIFAR100 sometimes has problem to start training
     #One solution is to train for CIFAR10 with same architecture
@@ -690,12 +693,12 @@ if __name__ == '__main__':
 
         #model.load_state_dict(torch.load(args.pretrained_ann, map_location='cpu')['state_dict'])
 
-        #for param in model.features.parameters():
+        # for param in model.features.parameters():
         #    param.require_grad = False
-        #num_features = model.classifier[6].in_features
-        #features = list(model.classifier.children())[:-1] # Remove last layer
-        #features.extend([nn.Linear(num_features, 1000)]) # Add our layer with 4 outputs
-        #model.classifier = nn.Sequential(*features) # Replace the model classifier
+        # num_features = model.classifier[6].in_features
+        # features = list(model.classifier.children())[:-1] # Remove last layer
+        # features.extend([nn.Linear(num_features, 1000)]) # Add our layer with 4 outputs
+        # model.classifier = nn.Sequential(*features) # Replace the model classifier
     
     # f.write('\n {}'.format(model)) 
     
@@ -713,17 +716,21 @@ if __name__ == '__main__':
     other_parameters = list(filter(lambda p: id(p) not in weight_parameters_id, all_parameters))
 
     if optimizer == 'SGD':
-        optimizer = optim.SGD(
-            [{'params' : other_parameters},
-            {'params' : weight_parameters, 'weight_decay' : args.weight_decay}],
-            lr=learning_rate,momentum=momentum)
-        # optimizer = optim.SGD(model.parameters(), lr=learning_rate, momentum=momentum, weight_decay=weight_decay)
+        if reg_thr:
+            optimizer = optim.SGD(
+                [{'params' : other_parameters},
+                {'params' : weight_parameters, 'weight_decay' : weight_decay}],
+                lr=learning_rate,momentum=momentum)
+        else:
+            optimizer = optim.SGD(model.parameters(), lr=learning_rate, momentum=momentum, weight_decay=weight_decay)
     elif optimizer == 'Adam':
-        optimizer = optim.Adam(
-            [{'params' : other_parameters},
-            {'params' : weight_parameters, 'weight_decay' : args.weight_decay}],
-            lr=learning_rate,amsgrad=True)
-        # optimizer = optim.Adam(model.parameters(), lr=learning_rate, amsgrad=True, weight_decay=weight_decay)
+        if reg_thr:
+            optimizer = optim.Adam(
+                [{'params' : other_parameters},
+                {'params' : weight_parameters, 'weight_decay' : weight_decay}],
+                lr=learning_rate,amsgrad=True)
+        else:
+            optimizer = optim.Adam(model.parameters(), lr=learning_rate, amsgrad=True, weight_decay=weight_decay)
     elif optimizer == 'RMSProp':
         optimizer = optim.RMSprop(
             [{'params' : other_parameters},
