@@ -206,7 +206,20 @@ class VGG_TUNABLE_THRESHOLD_tdbn(nn.Module):
             # hoyer_thr = (torch.permute(hoyer_cw*(torch.ones(N,W,H,C)).cuda(), (0,3,1,2)))
         return hoyer_thr
 
-    
+    def hoyer_loss(self, x):
+        # return torch.sum(x)
+        if torch.sum(torch.abs(x))>0: #  and l < self.start_spike_layer
+            if self.hoyer_type == 'mean':
+                return torch.mean(torch.sum(torch.abs(x), dim=(1,2,3))**2 / torch.sum((x)**2, dim=(1,2,3)))
+            elif self.hoyer_type == 'sum':
+                return  (torch.sum(torch.abs(x))**2 / torch.sum((x)**2))
+            elif self.hoyer_type == 'cw':
+                hoyer_thr = torch.sum((x)**2, dim=(0,2,3)) / torch.sum(torch.abs(x), dim=(0,2,3))
+                # 1.0 is the max thr
+                hoyer_thr = torch.nan_to_num(hoyer_thr, nan=1.0)
+                return torch.mean(hoyer_thr)
+        return 0
+
     def forward(self, x, epoch=1):   #######epoch
         out_prev = x
         self.threshold_out = []
@@ -246,7 +259,7 @@ class VGG_TUNABLE_THRESHOLD_tdbn(nn.Module):
                 # out = out_prev/torch.abs(getattr(self.threshold, 't'+str(l)))
                 # self.test_hoyer_thr[i] = self.get_hoyer_thr(out.clone().detach(), l)
                 # out = self.features[l](out, epoch, self.min_thr_scale[i], self.max_thr_scale[i], self.x_thr_scale, l, self.start_spike_layer)
-                out = self.features[l](out_prev)
+                # out_prev = self.features[l](out_prev)
 
                 # 3. x/hoyer_thr -> act
                 
@@ -270,24 +283,23 @@ class VGG_TUNABLE_THRESHOLD_tdbn(nn.Module):
                 # # out /= 0.618*(torch.sum((out.clone())**2) / torch.sum(torch.abs(out.clone())))
                 # out /= (torch.sum((out.clone())**2) / torch.sum(torch.abs(out.clone())))
                 # out = self.features[l](out, epoch, self.min_thr_scale[i], self.max_thr_scale[i], l, self.start_spike_layer)
-
                 
-                self.relu_batch_num += self.num_relu(out.clone().detach(), 0.0, 1.0, torch.max(out).clone().detach())
                 if epoch == -1:
-                    act_out[l] = out.clone().detach()
+                    act_out[l] = out_prev.clone().detach()
                 # elif epoch == -2:
                 #     act_out[l] = torch.mean(torch.sum((out)**2, dim=(1,2,3)) / torch.sum(torch.abs(out), dim=(1,2,3))) # hoyer threshold
                 else:
-                    if torch.sum(torch.abs(out))>0: #  and l < self.start_spike_layer
-                        if self.hoyer_type == 'mean':
-                            act_out += torch.mean(torch.sum(torch.abs(out), dim=(1,2,3))**2 / torch.sum((out)**2, dim=(1,2,3))).clone()
-                        elif self.hoyer_type == 'sum':
-                            act_out +=  (torch.sum(torch.abs(out))**2 / torch.sum((out)**2)).clone()
-                        elif self.hoyer_type == 'cw':
-                            hoyer_thr = torch.sum((out)**2, dim=(0,2,3)) / torch.sum(torch.abs(out), dim=(0,2,3))
-                            # 1.0 is the max thr
-                            hoyer_thr = torch.nan_to_num(hoyer_thr, nan=1.0)
-                            act_out += torch.mean(hoyer_thr)
+                    act_out += self.hoyer_loss(out_prev.clone())
+                    # if torch.sum(torch.abs(out_prev))>0: #  and l < self.start_spike_layer
+                    #     if self.hoyer_type == 'mean':
+                    #         act_out += torch.mean(torch.sum(torch.abs(out_prev), dim=(1,2,3))**2 / torch.sum((out_prev)**2, dim=(1,2,3))).clone()
+                    #     elif self.hoyer_type == 'sum':
+                    #         act_out +=  (torch.sum(torch.abs(out_prev))**2 / torch.sum((out_prev)**2)).clone()
+                    #     elif self.hoyer_type == 'cw':
+                    #         hoyer_thr = torch.sum((out_prev)**2, dim=(0,2,3)) / torch.sum(torch.abs(out_prev), dim=(0,2,3))
+                    #         # 1.0 is the max thr
+                    #         hoyer_thr = torch.nan_to_num(hoyer_thr, nan=1.0)
+                    #         act_out += torch.mean(hoyer_thr)
                         # elif self.hoyer_type == 'mask':
                         #     mask = torch.zeros_like(out).cuda()
                         #     mask[out<torch.max(out).clone().detach()] = 1.0
@@ -297,7 +309,9 @@ class VGG_TUNABLE_THRESHOLD_tdbn(nn.Module):
                         #     mask = torch.zeros_like(out).cuda()
                         #     mask[out<torch.max(out).clone().detach()] = 1.0
                         #     act_out += torch.sum(torch.abs(out*mask)).clone()
-                out_prev = self.dropout_conv(out)
+                out_prev = self.features[l](out_prev)
+                self.relu_batch_num += self.num_relu(out_prev.clone().detach(), 0.0, 1.0, torch.max(out_prev).clone().detach())
+                out_prev = self.dropout_conv(out_prev)
                 # out_prev = out
                 # threshold_out.append(hoyer_thr)
                 # self.threshold_out.append(self.threshold['t'+str(l)].clone().detach())
@@ -321,7 +335,7 @@ class VGG_TUNABLE_THRESHOLD_tdbn(nn.Module):
                 # out = out_prev/torch.abs(getattr(self.threshold, 't'+str(prev+l)))
                 # self.test_hoyer_thr[i] = self.get_hoyer_thr(out.clone().detach(), prev+l)
                 # out = self.classifier[l](out, epoch, self.min_thr_scale[i], self.max_thr_scale[i], self.x_thr_scale, prev+l, self.start_spike_layer)
-                out = self.classifier[l](out_prev)
+                # out_prev = self.classifier[l](out_prev)
                 # 3. x/hoyer_thr -> act
                 # out = self.relu(out_prev)
                 # self.test_hoyer_thr[i] = self.get_hoyer_thr(out.clone().detach(), prev+l)
@@ -338,17 +352,18 @@ class VGG_TUNABLE_THRESHOLD_tdbn(nn.Module):
                 # out /= (torch.sum((out.clone())**2) / torch.sum(torch.abs(out.clone()))) # 1819 has 0.618
                 # out = self.classifier[l](out, epoch, self.min_thr_scale[i], self.max_thr_scale[i], prev+l, self.start_spike_layer)
                 
-                self.relu_batch_num += self.num_relu(out, 0.0, 1.0, torch.max(out).clone().detach())
+                
                 if epoch == -1:
-                    act_out[prev+l] = out.clone().detach()
+                    act_out[prev+l] = out_prev.clone().detach()
                 # elif epoch == -2:
                 #     act_out[prev+l] = torch.mean(torch.sum((out)**2, dim=1) / torch.sum(torch.abs(out), dim=1)) # hoyer threshold
                 else:
-                    if torch.sum(torch.abs(out))>0: # and prev+l < self.start_spike_layer
-                        if self.hoyer_type == 'mean':
-                            act_out += (torch.mean(torch.sum(torch.abs(out), dim=1)**2 / torch.sum((out)**2, dim=1))).clone()
-                        elif self.hoyer_type == 'sum' or self.hoyer_type == 'cw':
-                            act_out +=  (torch.sum(torch.abs(out))**2 / torch.sum((out)**2)).clone()
+                    act_out += self.hoyer_loss(out_prev.clone())
+                    # if torch.sum(torch.abs(out_prev))>0: # and prev+l < self.start_spike_layer
+                    #     if self.hoyer_type == 'mean':
+                    #         act_out += (torch.mean(torch.sum(torch.abs(out_prev), dim=1)**2 / torch.sum((out_prev)**2, dim=1))).clone()
+                    #     elif self.hoyer_type == 'sum' or self.hoyer_type == 'cw':
+                    #         act_out +=  (torch.sum(torch.abs(out_prev))**2 / torch.sum((out_prev)**2)).clone()
                         # elif self.hoyer_type == 'mask':
                         #     mask = torch.zeros_like(out).cuda()
                         #     mask[out<torch.max(out).clone().detach()] = 1.0
@@ -358,8 +373,9 @@ class VGG_TUNABLE_THRESHOLD_tdbn(nn.Module):
                         #     mask = torch.zeros_like(out).cuda()
                         #     mask[out<torch.max(out).clone().detach()] = 1.0
                         #     act_out += torch.sum(torch.abs(out*mask)).clone()
-                        
-                out_prev = self.dropout_linear(out)
+                out_prev = self.classifier[l](out_prev)
+                self.relu_batch_num += self.num_relu(out_prev, 0.0, 1.0, torch.max(out_prev).clone().detach())
+                out_prev = self.dropout_linear(out_prev)
                 # out_prev = out
                 # threshold_out.append(hoyer_thr)
                 # self.threshold_out.append(self.threshold['t'+str(prev+l)].clone().detach())
@@ -518,5 +534,4 @@ def test2():
     print(x.shape, y.shape, isinstance(conv2d, Dynamic_conv2d))
 
 if __name__ == '__main__':
-    from dynamic_conv import Dynamic_conv2d
-    test()
+        test()

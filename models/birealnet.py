@@ -136,6 +136,36 @@ class BasicBlock_double(nn.Module):
 
         return out
 
+class Bottleneck(nn.Module):
+    expansion = 4
+
+    def __init__(self, in_planes, planes, stride=1):
+        super(Bottleneck, self).__init__()
+        self.conv1 = nn.Conv2d(in_planes, planes, kernel_size=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(planes)
+        self.conv2 = nn.Conv2d(planes, planes, kernel_size=3,
+                               stride=stride, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(planes)
+        self.conv3 = nn.Conv2d(planes, self.expansion *
+                               planes, kernel_size=1, bias=False)
+        self.bn3 = nn.BatchNorm2d(self.expansion*planes)
+
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_planes != self.expansion*planes:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(in_planes, self.expansion*planes,
+                          kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm2d(self.expansion*planes)
+            )
+
+    def forward(self, x):
+        out = F.relu(self.bn1(self.conv1(x)))
+        out = F.relu(self.bn2(self.conv2(out)))
+        out = self.bn3(self.conv3(out))
+        out += self.shortcut(x)
+        out = F.relu(out)
+        return out
+
 class ResNet_hoyer(nn.Module):
     def __init__(self, block, num_blocks, labels=10, dataset = 'CIFAR10', kernel_size=3, linear_dropout=0.1, conv_dropout=0.1, default_threshold=1.0, \
         net_mode='ori', hoyer_type='mean', act_mode = 'mean', bn_type='bn', start_spike_layer=50, conv_type='ori', pool_pos='after_relu', sub_act_mask=False, \
@@ -147,23 +177,25 @@ class ResNet_hoyer(nn.Module):
         self.hoyer_type     = hoyer_type
         self.x_thr_scale    = x_thr_scale
         self.if_spike       = True if start_spike_layer == 0 else False 
-        self.dropout        = nn.Sequential() if conv_dropout == 0.0 else nn.Dropout(conv_dropout)  
+        # self.linear_dropout = nn.Sequential() if linear_dropout == 0.0 else nn.Dropout(linear_dropout)  
+        # self.conv_dropout   = nn.Sequential() if conv_dropout == 0.0 else nn.Dropout(conv_dropout)  
         self.test_hoyer_thr = torch.tensor([0.0]*15)    
         if dataset == 'CIFAR10':
-            self.pre_process = nn.Sequential(
-                                nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False),
-                                nn.BatchNorm2d(64),
-                                HoyerBiAct(num_features=64, hoyer_type=self.act_mode, x_thr_scale=self.x_thr_scale, if_spike=self.if_spike),
+            self.pre_process = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
+            # self.pre_process = nn.Sequential(
+            #                     nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False),
+            #                     nn.BatchNorm2d(64),
+            #                     HoyerBiAct(num_features=64, hoyer_type=self.act_mode, x_thr_scale=self.x_thr_scale, if_spike=self.if_spike),
 
-                                nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1, bias=False),
-                                nn.BatchNorm2d(64),
-                                HoyerBiAct(num_features=64, hoyer_type=self.act_mode, x_thr_scale=self.x_thr_scale, if_spike=self.if_spike),
+            #                     nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1, bias=False),
+            #                     nn.BatchNorm2d(64),
 
-                                nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1, bias=False),
-                                # nn.MaxPool2d(2),
-                                # nn.BatchNorm2d(64),
-                                # HoyerBiAct(num_features=64, hoyer_type=self.act_mode)
-                                )
+            #                     HoyerBiAct(num_features=64, hoyer_type=self.act_mode, x_thr_scale=self.x_thr_scale, if_spike=self.if_spike),
+            #                     nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1, bias=False),
+            #                     # nn.MaxPool2d(2),
+            #                     # nn.BatchNorm2d(64),
+            #                     # HoyerBiAct(num_features=64, hoyer_type=self.act_mode)
+            #                     )
         elif dataset == 'IMAGENET':
             self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3,
                                 bias=False)
@@ -228,7 +260,7 @@ class ResNet_hoyer(nn.Module):
     def forward(self, x):
         act_out = 0.0
         x = self.pre_process(x)
-        x = self.maxpool(x)
+        # x = self.maxpool(x)
         x = self.bn1(x)
         act_out += self.hoyer_loss(x.clone())
 
@@ -262,11 +294,22 @@ def resnet20(pretrained=False, **kwargs):
     return model
 
 def resnet34_cifar(pretrained=False, **kwargs):
-    """Constructs a BiRealNet-18 model. """
+    """Constructs a BiRealNet-34 model. """
     model = ResNet_hoyer(BasicBlock, [6, 8, 10, 6], **kwargs)
     return model
-
-def birealnet34(pretrained=False, **kwargs):
+def resnet34(pretrained=False, **kwargs):
     """Constructs a BiRealNet-34 model. """
     model = ResNet_hoyer(BasicBlock, [6, 8, 12, 6], **kwargs)
     return model
+
+
+def ResNet50():
+    return ResNet_hoyer(Bottleneck, [3, 4, 6, 3])
+
+
+def ResNet101():
+    return ResNet_hoyer(Bottleneck, [3, 4, 23, 3])
+
+
+def ResNet152():
+    return ResNet_hoyer(Bottleneck, [3, 8, 36, 3])

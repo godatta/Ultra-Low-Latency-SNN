@@ -1,7 +1,7 @@
 import argparse
 
 from models.vgg_tunable_threshold_tdbn import VGG_TUNABLE_THRESHOLD_tdbn
-from models.birealnet import resnet18, resnet20, resnet34_cifar
+from models.birealnet import resnet18, resnet20, resnet34_cifar, resnet34, ResNet50, ResNet101, ResNet152
 from models.self_modules import HoyerBiAct
 from models.vgg_tunable_threshold_tdbn_imagenet import VGG_TUNABLE_THRESHOLD_tdbn_imagenet
 # from models.resnet_tunable_threshold import *
@@ -170,75 +170,76 @@ def train(epoch, loader):
     test_hoyer_thr = torch.tensor([0.0]*15)
     model.train() # this is impoetant, cannot remove
     
-    with tqdm(loader, total=len(loader)) as t:
-        for batch_idx, (data, target) in enumerate(t):
-    # for batch_idx, (data, target) in enumerate(loader):
+    # with tqdm(loader, total=len(loader)) as t:
+    #     for batch_idx, (data, target) in enumerate(t):
+    # for batch_idx, (data, target) in enumerate(tqdm(loader)):
+    for batch_idx, (data, target) in enumerate(loader):
         
         #start_time = datetime.datetime.now()
 
-            if torch.cuda.is_available() and args.gpu:
-                data, target = data.cuda(), target.cuda()
-            
-            # adjust_learning_rate(optimizer=optimizer, epoch=epoch, iteration=batch_idx, num_iter=len(loader))
-            optimizer.zero_grad()
-            #output, _ = model(data)
-            # if act_type == 'relu':
-            #     output, model_thr, relu_batch_num, act_out, thr_out = model(data, epoch)
-            # else:
-            # output, model_thr, relu_batch_num, act_out = model(data, epoch)
-            # torch.autograd.set_detect_anomaly(True)
-            output, act_out = model(data)
-            loss = F.cross_entropy(output,target)
-            #make_dot(loss).view()
+        if torch.cuda.is_available() and args.gpu:
+            data, target = data.cuda(), target.cuda()
+        
+        # adjust_learning_rate(optimizer=optimizer, epoch=epoch, iteration=batch_idx, num_iter=len(loader))
+        optimizer.zero_grad()
+        #output, _ = model(data)
+        # if act_type == 'relu':
+        #     output, model_thr, relu_batch_num, act_out, thr_out = model(data, epoch)
+        # else:
+        # output, model_thr, relu_batch_num, act_out = model(data, epoch)
+        # torch.autograd.set_detect_anomaly(True)
+        output, act_out = model(data)
+        loss = F.cross_entropy(output,target)
+        #make_dot(loss).view()
 
-            data_size = data.size(0)
-            act_loss = hoyer_decay*act_out
-            # total_loss = loss + act_loss
-            total_loss = loss + act_loss
-            # if act_type == 'relu':
-            #     thr_loss = thr_decay*thr_out
-            #     total_loss += thr_loss
-            # with torch.autograd.detect_anomaly():
-            total_loss.backward(inputs = list(model.parameters()))
-            
-            optimizer.step()       
-            
-            losses.update(loss.item(),data_size)
-            act_losses.update(act_loss, data_size)
-            total_losses.update(total_loss.item(), data_size)
+        data_size = data.size(0)
+        act_loss = hoyer_decay*act_out
+        # total_loss = loss + act_loss
+        total_loss = loss + act_loss
+        # if act_type == 'relu':
+        #     thr_loss = thr_decay*thr_out
+        #     total_loss += thr_loss
+        # with torch.autograd.detect_anomaly():
+        total_loss.backward(inputs = list(model.parameters()))
+        
+        optimizer.step()       
+        
+        losses.update(loss.item(),data_size)
+        act_losses.update(act_loss, data_size)
+        total_losses.update(total_loss.item(), data_size)
 
-            prec1, prec5 = accuracy(output, target, topk=(1, 5))
+        prec1, prec5 = accuracy(output, target, topk=(1, 5))
 
-            # pred = output.max(1,keepdim=True)[1]
-            # correct = pred.eq(target.data.view_as(pred)).cpu().sum()
-            # top1.update(correct.item()/data_size, data_size)
-            # top5.update(correct.item()/data_size, data_size)
+        # pred = output.max(1,keepdim=True)[1]
+        # correct = pred.eq(target.data.view_as(pred)).cpu().sum()
+        # top1.update(correct.item()/data_size, data_size)
+        # top5.update(correct.item()/data_size, data_size)
 
-            top1.update(prec1.item(), data_size)
-            top5.update(prec5.item(), data_size)
+        top1.update(prec1.item(), data_size)
+        top5.update(prec5.item(), data_size)
 
-            if use_hook and local_rank==0:
-                global all_layers_act
-                relu_total_num += all_layers_act
-                all_layers_act = torch.tensor([0.0, 0.0, 0.0, 0.0])
-            # relu_total_num += relu_batch_num
-            test_hoyer_thr += model.test_hoyer_thr if gpu_nums == 1 else model.module.test_hoyer_thr
-            # torch.cuda.empty_cache()
-            if local_rank==0 and ((epoch == 1 and batch_idx < 5) or (dataset == 'IMAGENET' and batch_idx%100==1)):
-                f.write('\nbatch: {}, train_loss: {:.4f}, act_loss: {:.4f}, total_train_loss: {:.4f} '.format(
-                batch_idx,
-                losses.avg,
-                act_losses.avg,
-                total_losses.avg,
-                ))
-                f.write('top1_acc: {:.2f}%, top5_acc: {:.2f}%, output 0: {:.2f}%, relu: {:.2f}%, output threshold: {:.2f}%, time: {}'.format(
-                top1.avg,
-                top5.avg,
-                relu_total_num[0]/relu_total_num[-1]*100,
-                relu_total_num[1]/relu_total_num[-1]*100,
-                relu_total_num[2]/relu_total_num[-1]*100,
-                datetime.timedelta(seconds=(datetime.datetime.now() - start_time).seconds)
-                ))
+        if use_hook and local_rank==0:
+            global all_layers_act
+            relu_total_num += all_layers_act
+            all_layers_act = torch.tensor([0.0, 0.0, 0.0, 0.0])
+        # relu_total_num += relu_batch_num
+        test_hoyer_thr += model.test_hoyer_thr if gpu_nums == 1 else model.module.test_hoyer_thr
+        # torch.cuda.empty_cache()
+        if local_rank==0 and ((epoch == 1 and batch_idx < 5) or (dataset == 'IMAGENET' and batch_idx%100==1)):
+            f.write('\nbatch: {}, train_loss: {:.4f}, act_loss: {:.4f}, total_train_loss: {:.4f} '.format(
+            batch_idx,
+            losses.avg,
+            act_losses.avg,
+            total_losses.avg,
+            ))
+            f.write('top1_acc: {:.2f}%, top5_acc: {:.2f}%, output 0: {:.2f}%, relu: {:.2f}%, output threshold: {:.2f}%, time: {}'.format(
+            top1.avg,
+            top5.avg,
+            relu_total_num[0]/relu_total_num[-1]*100,
+            relu_total_num[1]/relu_total_num[-1]*100,
+            relu_total_num[2]/relu_total_num[-1]*100,
+            datetime.timedelta(seconds=(datetime.datetime.now() - start_time).seconds)
+            ))
         # if batch_idx ==6:
         #     exit()
     # writer.add_scalars('Loss/train', {
@@ -421,8 +422,8 @@ def test(epoch, loader):
         relu_total_num = torch.tensor([0.0, 0.0, 0.0, 0.0])
         test_hoyer_thr = torch.tensor([0.0]*15)
 
-        for batch_idx, (data, target) in enumerate(tqdm(loader)):
-        # for batch_idx, (data, target) in enumerate(loader):
+        # for batch_idx, (data, target) in enumerate(tqdm(loader)):
+        for batch_idx, (data, target) in enumerate(loader):
             if torch.cuda.is_available() and args.gpu:
                 data, target = data.cuda(), target.cuda()
             
@@ -770,7 +771,7 @@ if __name__ == '__main__':
     parser.add_argument('--im_size',                default=None,               type=int,       help='image size')
 
 
-    parser.add_argument('-a','--architecture',      default='VGG16',            type=str,       help='network architecture', choices=['VGG4','VGG6','VGG9','VGG11','VGG13','VGG16','VGG19','RESNET12','RESNET20','RESNET34'])
+    parser.add_argument('-a','--architecture',      default='VGG16',            type=str,       help='network architecture', choices=['VGG4','VGG6','VGG9','VGG11','VGG13','VGG16','VGG19','RESNET12','RESNET18','RESNET20','RESNET34'])
     parser.add_argument('-rthr','--relu_threshold', default=0.5,                type=float,     help='threshold value for the RELU activation')
     parser.add_argument('--pretrained_ann',         default='',                 type=str,       help='pretrained model to initialize ANN')
     parser.add_argument('--epochs',                 default=300,                type=int,       help='number of training epochs')
@@ -1081,7 +1082,35 @@ if __name__ == '__main__':
             conv_type=conv_type, pool_pos=pool_pos, sub_act_mask=sub_act_mask, x_thr_scale=x_thr_scale, pooling_type=pooling_type, \
             weight_quantize=weight_quantize, im_size=im_size)
         elif architecture.lower() == 'resnet34':
-            model = resnet34_cifar(labels=labels, dropout=dropout, default_threshold=threshold) 
+            model = resnet34(labels=labels, dataset=dataset, kernel_size=kernel_size,\
+            linear_dropout=linear_dropout, conv_dropout = conv_dropout, default_threshold=threshold,\
+            net_mode=net_mode, hoyer_type=hoyer_type, act_mode=act_mode, bn_type=bn_type, start_spike_layer=start_spike_layer,\
+            conv_type=conv_type, pool_pos=pool_pos, sub_act_mask=sub_act_mask, x_thr_scale=x_thr_scale, pooling_type=pooling_type, \
+            weight_quantize=weight_quantize, im_size=im_size)
+        elif architecture.lower() == 'resnet34_cifar':
+            model = resnet34_cifar(labels=labels, dataset=dataset, kernel_size=kernel_size,\
+            linear_dropout=linear_dropout, conv_dropout = conv_dropout, default_threshold=threshold,\
+            net_mode=net_mode, hoyer_type=hoyer_type, act_mode=act_mode, bn_type=bn_type, start_spike_layer=start_spike_layer,\
+            conv_type=conv_type, pool_pos=pool_pos, sub_act_mask=sub_act_mask, x_thr_scale=x_thr_scale, pooling_type=pooling_type, \
+            weight_quantize=weight_quantize, im_size=im_size)
+        elif architecture.lower() == 'resnet50':
+            model = ResNet50(labels=labels, dataset=dataset, kernel_size=kernel_size,\
+            linear_dropout=linear_dropout, conv_dropout = conv_dropout, default_threshold=threshold,\
+            net_mode=net_mode, hoyer_type=hoyer_type, act_mode=act_mode, bn_type=bn_type, start_spike_layer=start_spike_layer,\
+            conv_type=conv_type, pool_pos=pool_pos, sub_act_mask=sub_act_mask, x_thr_scale=x_thr_scale, pooling_type=pooling_type, \
+            weight_quantize=weight_quantize, im_size=im_size)
+        elif architecture.lower() == 'resnet101':
+            model = ResNet101(labels=labels, dataset=dataset, kernel_size=kernel_size,\
+            linear_dropout=linear_dropout, conv_dropout = conv_dropout, default_threshold=threshold,\
+            net_mode=net_mode, hoyer_type=hoyer_type, act_mode=act_mode, bn_type=bn_type, start_spike_layer=start_spike_layer,\
+            conv_type=conv_type, pool_pos=pool_pos, sub_act_mask=sub_act_mask, x_thr_scale=x_thr_scale, pooling_type=pooling_type, \
+            weight_quantize=weight_quantize, im_size=im_size)
+        elif architecture.lower() == 'resnet152':
+            model = ResNet152(labels=labels, dataset=dataset, kernel_size=kernel_size,\
+            linear_dropout=linear_dropout, conv_dropout = conv_dropout, default_threshold=threshold,\
+            net_mode=net_mode, hoyer_type=hoyer_type, act_mode=act_mode, bn_type=bn_type, start_spike_layer=start_spike_layer,\
+            conv_type=conv_type, pool_pos=pool_pos, sub_act_mask=sub_act_mask, x_thr_scale=x_thr_scale, pooling_type=pooling_type, \
+            weight_quantize=weight_quantize, im_size=im_size)
     f.write('\n{}'.format(model))
     
     #CIFAR100 sometimes has problem to start training

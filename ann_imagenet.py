@@ -584,17 +584,19 @@ if __name__ == '__main__':
             train_dataset    = datasets.ImageFolder(
                                 traindir,
                                 transforms.Compose([
+                                    transforms.Resize(256),
                                     transforms.RandomResizedCrop(224),
                                     transforms.RandomHorizontalFlip(),
                                     transforms.ToTensor(),
                                     normalize,
                                 ]))
         else:
+            crop_scale = 0.08
             train_dataset    = datasets.ImageFolder(
                                 traindir,
                                 transforms.Compose([
-                                    transforms.Resize(im_size),
-                                    transforms.RandomResizedCrop(im_size),
+                                    # new data augmentation
+                                    transforms.RandomResizedCrop(im_size, scale=(crop_scale, 1.0)),
                                     transforms.RandomHorizontalFlip(),
                                     transforms.ToTensor(),
                                     normalize,
