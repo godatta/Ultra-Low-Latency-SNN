@@ -170,7 +170,7 @@ def train(epoch, loader):
     
     #total_correct   = 0
     relu_total_num = torch.tensor([0.0, 0.0, 0.0, 0.0])
-    test_hoyer_thr = torch.tensor([0.0]*15)
+    # test_hoyer_thr = torch.tensor([0.0]*15)
     model.train() # this is impoetant, cannot remove
     
     # with tqdm(loader, total=len(loader)) as t:
@@ -206,7 +206,6 @@ def train(epoch, loader):
         total_loss.backward(inputs = list(model.parameters()))
         
         optimizer.step()       
-        scheduler.step()
         losses.update(loss.item(),data_size)
         act_losses.update(act_loss, data_size)
         total_losses.update(total_loss.item(), data_size)
@@ -226,7 +225,7 @@ def train(epoch, loader):
             relu_total_num += all_layers_act
             all_layers_act = torch.tensor([0.0, 0.0, 0.0, 0.0])
         # relu_total_num += relu_batch_num
-        test_hoyer_thr += model.test_hoyer_thr if gpu_nums == 1 else model.module.test_hoyer_thr
+        # test_hoyer_thr += model.test_hoyer_thr if gpu_nums == 1 else model.module.test_hoyer_thr
         # torch.cuda.empty_cache()
         if local_rank==0 and ((epoch == 1 and batch_idx < 5) or (dataset == 'IMAGENET' and batch_idx%100==1)):
             f.write('\nbatch: {}, train_loss: {:.4f}, act_loss: {:.4f}, total_train_loss: {:.4f} '.format(
@@ -255,7 +254,7 @@ def train(epoch, loader):
     # writer.add_scalar('Relu/less_eq_0', relu_total_num[0]/relu_total_num[-1]*100, epoch)
     # writer.add_scalar('Relu/between_0_thr', relu_total_num[1]/relu_total_num[-1]*100, epoch)
     # writer.add_scalar('Relu/laeger_eq_thr', relu_total_num[2]/relu_total_num[-1]*100, epoch)
-    
+    scheduler.step()
     if local_rank == 0:
         nameed_params = model.named_parameters() if gpu_nums == 1 else model.module.named_parameters()
         model_thrs = []
@@ -332,7 +331,7 @@ def simple_train(epoch, loader):
             total_loss.backward(inputs = list(model.parameters()))
             
             optimizer.step()       
-            scheduler.step()
+            
             losses.update(loss.item(),data_size)
             act_losses.update(act_loss, data_size)
             total_losses.update(total_loss.item(), data_size)
@@ -352,7 +351,7 @@ def simple_train(epoch, loader):
                 top5.avg,
                 datetime.timedelta(seconds=(datetime.datetime.now() - start_time).seconds)
                 ))
-    
+    scheduler.step()
     if local_rank == 0:
         if use_wandb:
             wandb.log({
@@ -393,7 +392,7 @@ def test(epoch, loader):
         global max_accuracy, start_time
             
         relu_total_num = torch.tensor([0.0, 0.0, 0.0, 0.0])
-        test_hoyer_thr = torch.tensor([0.0]*15)
+        # test_hoyer_thr = torch.tensor([0.0]*15)
 
         # for batch_idx, (data, target) in enumerate(tqdm(loader)):
         for batch_idx, (data, target) in enumerate(loader):
@@ -506,7 +505,7 @@ def test(epoch, loader):
                 relu_total_num += all_layers_act
                 all_layers_act = torch.tensor([0.0, 0.0, 0.0, 0.0])
             # relu_total_num += relu_batch_num
-            test_hoyer_thr += model.test_hoyer_thr if gpu_nums == 1 else model.module.test_hoyer_thr
+            # test_hoyer_thr += model.test_hoyer_thr if gpu_nums == 1 else model.module.test_hoyer_thr
         #with open('percentiles_resnet20_cifar100.json','w') as f:
         #    json.dump(percentiles, f)
 
@@ -519,7 +518,7 @@ def test(epoch, loader):
         #if epoch>30 and top1.avg<0.15:
         #    f.write('\n Quitting as the training is not progressing')
         #    exit(0)
-        final_avg = np.array([(p.data)/(batch_idx+1) for p in test_hoyer_thr])
+        # final_avg = np.array([(p.data)/(batch_idx+1) for p in test_hoyer_thr])
         if test_only and test_type == 'v2':
             torch.save(plot_output, 'network_output/'+identifier+'_v2')
         if get_scale:
@@ -569,7 +568,7 @@ def test(epoch, loader):
             )
         )
 
-        f.write('\nThe hoyer thr in ann is: {}'.format([(p.data)/(batch_idx+1) for p in test_hoyer_thr]))
+        # f.write('\nThe hoyer thr in ann is: {}'.format([(p.data)/(batch_idx+1) for p in test_hoyer_thr]))
 
 def simple_test(epoch, loader):
 

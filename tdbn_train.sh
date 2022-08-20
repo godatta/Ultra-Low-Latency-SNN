@@ -17,12 +17,12 @@
 # --description 'new version resnet 18, layer wise hoyer loss, spike->conv->bn without dropout, singer layers as a block add final act add last layer hoyerloss, with new data augmentation'
 
 
-torchrun --nproc_per_node=2 ann.py --dataset CIFAR10 --batch_size 128 --im_size 32 --architecture RESNET50 \
---learning_rate 2e-2 --epochs 400 --lr_interval '0.60 0.80 0.90' --lr_reduce 5 --relu_threshold 1.0 \
---optimizer SGD --weight_decay 0.0001 --momentum 0.9 --amsgrad True --devices 0,1 --seed 0 --linear_dropout 0 --conv_dropout 0 \
+torchrun --nproc_per_node=2 ann.py --dataset CIFAR10 --batch_size 128 --im_size 32 --architecture RESNET34 \
+--learning_rate 2e-2 --epochs 600 --lr_interval '0.60 0.80 0.90' --lr_reduce 5 --relu_threshold 1.0 \
+--optimizer SGD --weight_decay 0.0002 --momentum 0.9 --amsgrad True --devices 0,1 --seed 0 --linear_dropout 0 --conv_dropout 0 \
 --net_mode 'ori' --log --pool_pos 'before_relu' --bn_type 'bn' \
---spike_type 'sum' --loss_type 'sum' --hoyer_decay 1e-8 --start_spike_layer 0 --x_thr_scale 1.0 --weight_quantize 0 \
---description 'test resnet50' --use_hook
+--spike_type 'cw' --loss_type 'sum' --hoyer_decay 1e-8 --start_spike_layer 0 --x_thr_scale 1.0 --weight_quantize 0 \
+--description 'test resnet50 sum' --use_hook  --use_wandb
 # --description 'resnet20 test spike->conv->bn without dropout, layer wise hoyer_reg '  --use_wandb
 
 # 93.92 --use_wandb --use_reg --use_hook
