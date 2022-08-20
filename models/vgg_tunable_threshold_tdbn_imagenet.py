@@ -34,6 +34,8 @@ class VGG_TUNABLE_THRESHOLD_tdbn_imagenet(nn.Module):
         self.x_thr_scale    = x_thr_scale
         self.weight_quantize= weight_quantize
         self.pooling        = nn.MaxPool2d(kernel_size=2, stride=2) if pooling_type == 'max' else nn.AvgPool2d(kernel_size=2, stride=2)
+        # self.avgpool        = nn.AdaptiveAvgPool2d((7, 7))
+        self.avgpool        = nn.AdaptiveMaxPool2d((7,7))
         self.features       = self._make_layers(cfg[vgg_name])
         self.dropout_conv   = nn.Dropout(conv_dropout)
         self.dropout_linear = nn.Dropout(linear_dropout)
@@ -46,27 +48,7 @@ class VGG_TUNABLE_THRESHOLD_tdbn_imagenet(nn.Module):
             self.max_thr_scale = [1.0]*15
         
         # define 3 fc
-        if vgg_name == 'VGG6' and dataset!= 'MNIST':
-            self.classifier = nn.Sequential(
-                            nn.Linear(512*4*4, 4096, bias=False),
-                            #nn.ReLU(inplace=True),
-                            #nn.Dropout(0.5),
-                            nn.Linear(4096, 4096, bias=False),
-                            #nn.ReLU(inplace=True),
-                            #nn.Dropout(0.5),
-                            nn.Linear(4096, labels, bias=False)
-                            )
-        elif vgg_name == 'VGG4' and dataset== 'MNIST':
-            self.classifier = nn.Sequential(
-                            nn.Linear(128*7*7, 1024, bias=False),
-                            #nn.ReLU(inplace=True),
-                            #nn.Dropout(0.5),
-                            #nn.Linear(4096, 4096, bias=False),
-                            #nn.ReLU(inplace=True),
-                            #nn.Dropout(0.5),
-                            nn.Linear(1024, labels, bias=False)
-                            )
-        elif vgg_name!='VGG6' and dataset=='IMAGENET':
+        if dataset=='IMAGENET':
             self.classifier = nn.Sequential(
                             nn.Linear((im_size//32)**2*512, 4096, bias=False),
                             # nn.Linear(512*7*7, 4096, bias=False),
@@ -75,7 +57,7 @@ class VGG_TUNABLE_THRESHOLD_tdbn_imagenet(nn.Module):
                             HoyerBiAct(hoyer_type='sum', x_thr_scale=self.x_thr_scale, if_spike=self.if_spike),
                             nn.Linear(4096, labels, bias=False)
             )
-        elif vgg_name!='VGG6' and dataset!='MNIST':
+        elif dataset=='CIFAR10':
             self.classifier = nn.Sequential(
                             nn.Linear(2048, 4096, bias=False),
                             HoyerBiAct(hoyer_type='sum', x_thr_scale=self.x_thr_scale, if_spike=self.if_spike),
@@ -85,26 +67,7 @@ class VGG_TUNABLE_THRESHOLD_tdbn_imagenet(nn.Module):
                             #nn.Dropout(0.5),
                             nn.Linear(4096, labels, bias=False)
                             )
-        elif vgg_name == 'VGG6' and dataset == 'MNIST':
-            self.classifier = nn.Sequential(
-                            nn.Linear(128*7*7, 4096, bias=False),
-                            #nn.ReLU(inplace=True),
-                            #nn.Dropout(0.5),
-                            nn.Linear(4096, 4096, bias=False),
-                            #nn.ReLU(inplace=True),
-                            #nn.Dropout(0.5),
-                            nn.Linear(4096, labels, bias=False)
-                            )
-        elif vgg_name!='VGG6' and dataset =='MNIST':
-            self.classifier = nn.Sequential(
-                            nn.Linear(512*1*1, 4096, bias=False),
-                            #nn.ReLU(inplace=True),
-                            #nn.Dropout(0.5),
-                            nn.Linear(4096, 4096, bias=False),
-                            #nn.ReLU(inplace=True),
-                            #nn.Dropout(0.5),
-                            nn.Linear(4096, labels, bias=False)
-                            )
+  
         self._initialize_weights2()
     
     def forward(self, x):   #######epoch
@@ -112,6 +75,7 @@ class VGG_TUNABLE_THRESHOLD_tdbn_imagenet(nn.Module):
         act_out = 0.0
         for l in range(len(self.features)):
             if isinstance(self.features[l], HoyerBiAct):
+                # print(f'{l} layer, shape: {out_prev.shape}')
                 
                 out_prev = self.features[l](out_prev)
                 if torch.sum(torch.abs(out_prev))>0: #  and l < self.start_spike_layer
@@ -121,10 +85,12 @@ class VGG_TUNABLE_THRESHOLD_tdbn_imagenet(nn.Module):
                 out_prev = self.dropout_conv(out_prev)
             else:
                 out_prev = self.features[l](out_prev)
-   
+
+        # out_prev = self.avgpool(out_prev) put it before spike
         out_prev = out_prev.view(out_prev.size(0), -1)
 
         for l in range(len(self.classifier)-1):
+            # print(f'{l} layer, shape: {out_prev.shape}')
             if isinstance(self.classifier[l], nn.Linear):
                 out_prev = self.classifier[l](out_prev) #- getattr(self.threshold, 't'+str(prev+l))*epoch*1e-3
             
@@ -138,7 +104,6 @@ class VGG_TUNABLE_THRESHOLD_tdbn_imagenet(nn.Module):
                 out_prev = self.dropout_linear(out_prev)
 
         out = self.classifier[l+1](out_prev)
-
         return out, act_out #self.layer_output
 
 
@@ -174,41 +139,24 @@ class VGG_TUNABLE_THRESHOLD_tdbn_imagenet(nn.Module):
                     m.bias.data.zero_()
     
     def _make_layers(self, cfg):
-        act_size = 32
         layers = []
 
-        if self.dataset == 'MNIST':
-            in_channels = 1
-        else:
-            in_channels = 3
+        in_channels = 3
         # index = 0
         for i,x in enumerate(cfg):
             stride = 1
             
-            
             if x == 'A':
                 pass
             else: 
-                if self.conv_type == 'ori':
-                    conv2d = nn.Conv2d(in_channels, x, kernel_size=self.kernel_size, padding=(self.kernel_size-1)//2, stride=stride, bias=False)
-                elif self.conv_type == 'dy':
-                    conv2d = Dynamic_conv2d(in_channels, x, kernel_size=self.kernel_size, padding=(self.kernel_size-1)//2, bias=False)
+                conv2d = nn.Conv2d(in_channels, x, kernel_size=self.kernel_size, padding=(self.kernel_size-1)//2, stride=stride, bias=False)
 
                 if i+1 < len(cfg) and cfg[i+1] == 'A':
-                    if self.pool_pos == 'before_relu':
-                        act_size //= 2
-                        layers += [conv2d,
-                                self.pooling,
-                                nn.BatchNorm2d(x),
-                                HoyerBiAct(num_features=x, hoyer_type=self.act_mode, x_thr_scale=self.x_thr_scale, if_spike=self.if_spike)
-                                ]
-                    elif self.pool_pos == 'after_relu':
-                        layers += [conv2d,
-                                nn.BatchNorm2d(x),
-                                HoyerBiAct(num_features=x, hoyer_type=self.act_mode, x_thr_scale=self.x_thr_scale, if_spike=self.if_spike),
-                                self.pooling,
-                                ]
-                        act_size //= 2
+                    layers += [conv2d,
+                            self.pooling,
+                            nn.BatchNorm2d(x),
+                            HoyerBiAct(num_features=x, hoyer_type=self.act_mode, x_thr_scale=self.x_thr_scale, if_spike=self.if_spike)
+                            ]
                 else:
                     layers += [conv2d,
                             nn.BatchNorm2d(x),
@@ -219,7 +167,7 @@ class VGG_TUNABLE_THRESHOLD_tdbn_imagenet(nn.Module):
             layers.pop()
             layers.pop()
 
-            layers += [self.pooling, 
+            layers += [self.avgpool, 
                     nn.BatchNorm2d(x),
                     HoyerBiAct(num_features=x, hoyer_type=self.act_mode, x_thr_scale=self.x_thr_scale, if_spike=self.if_spike)]
         return nn.Sequential(*layers)

@@ -1,7 +1,7 @@
 import argparse
 
 from models.vgg_tunable_threshold_tdbn import VGG_TUNABLE_THRESHOLD_tdbn
-from models.birealnet import resnet18, resnet20, resnet34_cifar, resnet34, ResNet50, ResNet101, ResNet152
+from models.hoyer_resnet import resnet18, resnet20, resnet34_cifar, resnet34, ResNet50, ResNet101, ResNet152
 from models.self_modules import HoyerBiAct
 from models.vgg_tunable_threshold_tdbn_imagenet import VGG_TUNABLE_THRESHOLD_tdbn_imagenet
 # from models.resnet_tunable_threshold import *
@@ -69,6 +69,7 @@ def accuracy(output, target, topk=(1,)):
 
 def adjust_learning_rate(optimizer, epoch, iteration, num_iter):
     lr = optimizer.param_groups[0]['lr']
+
 
     warmup_epoch = 5 if args.warmup else 0
     warmup_iter = warmup_epoch * num_iter
@@ -154,11 +155,13 @@ def train(epoch, loader):
     top1   = AverageMeter('Acc@1')
     top5   = AverageMeter('Acc@5')
     
-    if epoch in lr_interval:
-        for param_group in optimizer.param_groups:
-            param_group['lr'] = param_group['lr'] / lr_reduce
-            learning_rate = param_group['lr']
-
+    # if epoch in lr_interval:
+    #     for param_group in optimizer.param_groups:
+    #         param_group['lr'] = param_group['lr'] / lr_reduce
+    #         learning_rate = param_group['lr']
+    for param_group in optimizer.param_groups:
+        learning_rate = param_group['lr']
+    
     #if epoch in lr_interval:
     #else:
     #    for param_group in optimizer.param_groups:
@@ -203,7 +206,7 @@ def train(epoch, loader):
         total_loss.backward(inputs = list(model.parameters()))
         
         optimizer.step()       
-        
+        scheduler.step()
         losses.update(loss.item(),data_size)
         act_losses.update(act_loss, data_size)
         total_losses.update(total_loss.item(), data_size)
@@ -303,21 +306,22 @@ def simple_train(epoch, loader):
     top1   = AverageMeter('Acc@1')
     top5   = AverageMeter('Acc@5')
     
-    if epoch in lr_interval:
-        for param_group in optimizer.param_groups:
-            param_group['lr'] = param_group['lr'] / lr_reduce
-            learning_rate = param_group['lr']
+    # if epoch in lr_interval:
+    #     for param_group in optimizer.param_groups:
+    #         param_group['lr'] = param_group['lr'] / lr_reduce
+    #         learning_rate = param_group['lr']
+    for param_group in optimizer.param_groups:
+        learning_rate = param_group['lr']
 
-    relu_total_num = torch.tensor([0.0, 0.0, 0.0, 0.0])
-    # test_hoyer_thr = torch.tensor([0.0]*15)
     model.train() # this is impoetant, cannot remove
+    
     
     with tqdm(loader, total=len(loader)) as t:
         for batch_idx, (data, target) in enumerate(t):
             if torch.cuda.is_available() and args.gpu:
                 data, target = data.cuda(), target.cuda()
             
-            adjust_learning_rate(optimizer=optimizer, epoch=epoch, iteration=batch_idx, num_iter=len(loader))
+            # adjust_learning_rate(optimizer=optimizer, epoch=epoch, iteration=batch_idx, num_iter=len(loader))
             optimizer.zero_grad()
             output, act_out = model(data)
             loss = F.cross_entropy(output,target)
@@ -328,7 +332,7 @@ def simple_train(epoch, loader):
             total_loss.backward(inputs = list(model.parameters()))
             
             optimizer.step()       
-            
+            scheduler.step()
             losses.update(loss.item(),data_size)
             act_losses.update(act_loss, data_size)
             total_losses.update(total_loss.item(), data_size)
@@ -337,14 +341,8 @@ def simple_train(epoch, loader):
             top1.update(prec1.item(), data_size)
             top5.update(prec5.item(), data_size)
 
-            if use_hook and local_rank==0:
-                global all_layers_act
-                relu_total_num += all_layers_act
-                all_layers_act = torch.tensor([0.0, 0.0, 0.0, 0.0])
-            # relu_total_num += relu_batch_num
-            # test_hoyer_thr += model.test_hoyer_thr if gpu_nums == 1 else model.module.test_hoyer_thr
-            # torch.cuda.empty_cache()
-            if local_rank==0 and ((epoch == 1 and batch_idx < 5) or (dataset == 'IMAGENET' and batch_idx%100==1)):
+            # or (dataset == 'IMAGENET' and batch_idx%100==1)
+            if local_rank==0 and ((epoch == 1 and batch_idx < 5)):
                 f.write('\nbatch: {}, train_loss: {:.4f}, act_loss: {:.4f}, total_train_loss: {:.4f}, top1_acc: {:.2f}%, top5_acc: {:.2f}%, time: {}'.format(
                 batch_idx,
                 losses.avg,
@@ -354,21 +352,8 @@ def simple_train(epoch, loader):
                 top5.avg,
                 datetime.timedelta(seconds=(datetime.datetime.now() - start_time).seconds)
                 ))
-                if use_hook and local_rank==0:
-                    f.write(', output 0: {:.2f}%, relu: {:.2f}%, output threshold: {:.2f}%, '.format(
-                    relu_total_num[0]/relu_total_num[-1]*100,
-                    relu_total_num[1]/relu_total_num[-1]*100,
-                    relu_total_num[2]/relu_total_num[-1]*100,
-                    ))
     
     if local_rank == 0:
-        nameed_params = model.named_parameters() if gpu_nums == 1 else model.module.named_parameters()
-        model_thrs = []
-        for name, m in nameed_params:
-            if 'threshold' in name:
-                model_thrs.append(m.item())
-        if model_thrs:
-            model_thr = model_thrs
         if use_wandb:
             wandb.log({
                 'loss': losses.avg,
@@ -379,11 +364,6 @@ def simple_train(epoch, loader):
             #     wandb.log({f'hoyer_thr_{i}': test_hoyer_thr[i]/batch_idx}, step=epoch)
             wandb.log({'training_acc': top1.avg}, step=epoch)
             wandb.log({'top_5_acc': top5.avg}, step=epoch)
-            if use_hook and local_rank==0:
-                wandb.log({'Relu_less_eq_0': relu_total_num[0]/relu_total_num[-1]*100}, step=epoch)
-                wandb.log({'Relu_between_0_thr': relu_total_num[1]/relu_total_num[-1]*100}, step=epoch)
-                wandb.log({'Relu_laeger_eq_thr': relu_total_num[2]/relu_total_num[-1]*100}, step=epoch)
-        f.write('\n The threshold in ann is: {}'.format([round(p, 4) for p in model_thr]))
         f.write('\nEpoch: {}, lr: {:.1e}, train_loss: {:.4f}, act_loss: {:.4f}, total_train_loss: {:.4f}, top1_acc: {:.2f}%, top5_acc: {:.2f}%, '.format(
                 epoch,
                 learning_rate,
@@ -393,13 +373,6 @@ def simple_train(epoch, loader):
                 top1.avg,
                 top5.avg
                 ))
-        if use_hook and local_rank==0:
-            f.write('output 0: {:.2f}%, relu: {:.2f}%, output threshold: {:.2f}%, time: {}'.format(
-                    relu_total_num[0]/relu_total_num[-1]*100,
-                    relu_total_num[1]/relu_total_num[-1]*100,
-                    relu_total_num[2]/relu_total_num[-1]*100,
-                    datetime.timedelta(seconds=(datetime.datetime.now() - start_time).seconds)))
-
 
 def test(epoch, loader):
 
@@ -611,8 +584,6 @@ def simple_test(epoch, loader):
         total_loss = 0
         global max_accuracy, start_time
             
-        relu_total_num = torch.tensor([0.0, 0.0, 0.0, 0.0])
-
         for batch_idx, (data, target) in enumerate(tqdm(loader)):
             if torch.cuda.is_available() and args.gpu:
                 data, target = data.cuda(), target.cuda()
@@ -630,13 +601,14 @@ def simple_test(epoch, loader):
             prec1, prec5 = accuracy(output, target, topk=(1, 2 ))
             top1.update(prec1.item(), data_size)
             top5.update(prec5.item(), data_size)
-            if use_hook and local_rank==0:
-                global all_layers_act
-                relu_total_num += all_layers_act
-                all_layers_act = torch.tensor([0.0, 0.0, 0.0, 0.0])
-            # relu_total_num += relu_batch_num
 
         if not test_only and use_wandb:
+            if use_wandb:
+                wandb.log({
+                    'test_loss': losses.avg,
+                    'test_loss_act': act_losses.avg,
+                    'test_total_loss': total_losses.avg
+                }, step=epoch)
             wandb.log({'test_acc': top1.avg}, step=epoch)
 
         if (top1.avg>=max_accuracy):
@@ -669,13 +641,6 @@ def simple_test(epoch, loader):
             top5.avg
             )
         )
-        if use_hook and local_rank==0:
-            f.write('output 0: {:.2f}%, relu: {:.2f}%, output threshold: {:.2f}%, time: {}\n'.format(
-                relu_total_num[0]/relu_total_num[-1]*100,
-                relu_total_num[1]/relu_total_num[-1]*100,
-                relu_total_num[2]/relu_total_num[-1]*100,
-                datetime.timedelta(seconds=(datetime.datetime.now() - start_time).seconds)
-                ))
 
 def visualize(loader, to_path, visual_type=['directly', 'grad_cam'], num_imgs=100):
 
@@ -771,7 +736,7 @@ if __name__ == '__main__':
     parser.add_argument('--im_size',                default=None,               type=int,       help='image size')
 
 
-    parser.add_argument('-a','--architecture',      default='VGG16',            type=str,       help='network architecture', choices=['VGG4','VGG6','VGG9','VGG11','VGG13','VGG16','VGG19','RESNET12','RESNET18','RESNET20','RESNET34'])
+    parser.add_argument('-a','--architecture',      default='VGG16',            type=str,       help='network architecture', choices=['VGG4','VGG6','VGG9','VGG11','VGG13','VGG16','VGG19','RESNET12','RESNET18','RESNET20','RESNET34', 'RESNET50'])
     parser.add_argument('-rthr','--relu_threshold', default=0.5,                type=float,     help='threshold value for the RELU activation')
     parser.add_argument('--pretrained_ann',         default='',                 type=str,       help='pretrained model to initialize ANN')
     parser.add_argument('--epochs',                 default=300,                type=int,       help='number of training epochs')
@@ -789,8 +754,8 @@ if __name__ == '__main__':
     parser.add_argument('--net_mode',               default='ori',              type=str,       help='ori: original one, cut: cut the threshold')
     # parser.add_argument('--act_type',               default='spike',            type=str,       help='thr: tunable threshold, relu: relu with thr, spike: tunable spiking')
     # parser.add_argument('--thr_decay',              default=0.0001,             type=float,     help='weight decay for threshold loss (default: 0.001)')
-    parser.add_argument('--hoyer_type',             default='mean',             type=str,       help='mean:, sum:, mask')
-    parser.add_argument('--act_mode',               default='v1',               type=str,       help='fixed: threshold always is 1.0, sum: use sum hoyer as thr, channelwise(cw): use cw hoyer as thr ')
+    parser.add_argument('--loss_type',             default='mean',             type=str,       help='mean:, sum:, mask')
+    parser.add_argument('--spike_type',               default='v1',               type=str,       help='fixed: threshold always is 1.0, sum: use sum hoyer as thr, channelwise(cw): use cw hoyer as thr ')
     parser.add_argument('--start_spike_layer',      default=50,                 type=int,       help='start_spike_layer')
     parser.add_argument('--bn_type',                default='bn',               type=str,       help='bn: , tdbn: , fake: the type of batch normalization')
     parser.add_argument('--conv_type',              default='ori',              type=str,       help='ori: original conv, dy: dynamic conv,')
@@ -853,8 +818,8 @@ if __name__ == '__main__':
     # act_type        = args.act_type
     # thr_decay       = args.thr_decay
     hoyer_decay     = args.hoyer_decay
-    hoyer_type      = args.hoyer_type
-    act_mode        = args.act_mode
+    loss_type       = args.loss_type
+    spike_type      = args.spike_type
     start_spike_layer = args.start_spike_layer
     bn_type         = args.bn_type
     conv_type       = args.conv_type
@@ -1056,13 +1021,13 @@ if __name__ == '__main__':
         # act_type == 'tdbn'
         model = VGG_TUNABLE_THRESHOLD_tdbn(vgg_name=architecture, labels=labels, dataset=dataset, kernel_size=kernel_size,\
             linear_dropout=linear_dropout, conv_dropout = conv_dropout, default_threshold=threshold,\
-            net_mode=net_mode, hoyer_type=hoyer_type, act_mode=act_mode, bn_type=bn_type, start_spike_layer=start_spike_layer,\
+            net_mode=net_mode, loss_type=loss_type, spike_type=spike_type, bn_type=bn_type, start_spike_layer=start_spike_layer,\
             conv_type=conv_type, pool_pos=pool_pos, sub_act_mask=sub_act_mask, x_thr_scale=x_thr_scale, pooling_type=pooling_type, \
             weight_quantize=weight_quantize, im_size=im_size)
     elif architecture[0:3].lower() == 'vgg' and dataset == 'IMAGENET':
         model = VGG_TUNABLE_THRESHOLD_tdbn_imagenet(vgg_name=architecture, labels=labels, dataset=dataset, kernel_size=kernel_size,\
             linear_dropout=linear_dropout, conv_dropout = conv_dropout, default_threshold=threshold,\
-            net_mode=net_mode, hoyer_type=hoyer_type, act_mode=act_mode, bn_type=bn_type, start_spike_layer=start_spike_layer,\
+            net_mode=net_mode, loss_type=loss_type, spike_type=spike_type, bn_type=bn_type, start_spike_layer=start_spike_layer,\
             conv_type=conv_type, pool_pos=pool_pos, sub_act_mask=sub_act_mask, x_thr_scale=x_thr_scale, pooling_type=pooling_type, \
             weight_quantize=weight_quantize, im_size=im_size)
 
@@ -1072,43 +1037,43 @@ if __name__ == '__main__':
         elif architecture.lower() == 'resnet18':
             model = resnet18(labels=labels, dataset=dataset, kernel_size=kernel_size,\
             linear_dropout=linear_dropout, conv_dropout = conv_dropout, default_threshold=threshold,\
-            net_mode=net_mode, hoyer_type=hoyer_type, act_mode=act_mode, bn_type=bn_type, start_spike_layer=start_spike_layer,\
+            net_mode=net_mode, loss_type=loss_type, spike_type=spike_type, bn_type=bn_type, start_spike_layer=start_spike_layer,\
             conv_type=conv_type, pool_pos=pool_pos, sub_act_mask=sub_act_mask, x_thr_scale=x_thr_scale, pooling_type=pooling_type, \
             weight_quantize=weight_quantize, im_size=im_size)
         elif architecture.lower() == 'resnet20':
             model = resnet20(labels=labels, dataset=dataset, kernel_size=kernel_size,\
             linear_dropout=linear_dropout, conv_dropout = conv_dropout, default_threshold=threshold,\
-            net_mode=net_mode, hoyer_type=hoyer_type, act_mode=act_mode, bn_type=bn_type, start_spike_layer=start_spike_layer,\
+            net_mode=net_mode, loss_type=loss_type, spike_type=spike_type, bn_type=bn_type, start_spike_layer=start_spike_layer,\
             conv_type=conv_type, pool_pos=pool_pos, sub_act_mask=sub_act_mask, x_thr_scale=x_thr_scale, pooling_type=pooling_type, \
             weight_quantize=weight_quantize, im_size=im_size)
         elif architecture.lower() == 'resnet34':
             model = resnet34(labels=labels, dataset=dataset, kernel_size=kernel_size,\
             linear_dropout=linear_dropout, conv_dropout = conv_dropout, default_threshold=threshold,\
-            net_mode=net_mode, hoyer_type=hoyer_type, act_mode=act_mode, bn_type=bn_type, start_spike_layer=start_spike_layer,\
+            net_mode=net_mode, loss_type=loss_type, spike_type=spike_type, bn_type=bn_type, start_spike_layer=start_spike_layer,\
             conv_type=conv_type, pool_pos=pool_pos, sub_act_mask=sub_act_mask, x_thr_scale=x_thr_scale, pooling_type=pooling_type, \
             weight_quantize=weight_quantize, im_size=im_size)
         elif architecture.lower() == 'resnet34_cifar':
             model = resnet34_cifar(labels=labels, dataset=dataset, kernel_size=kernel_size,\
             linear_dropout=linear_dropout, conv_dropout = conv_dropout, default_threshold=threshold,\
-            net_mode=net_mode, hoyer_type=hoyer_type, act_mode=act_mode, bn_type=bn_type, start_spike_layer=start_spike_layer,\
+            net_mode=net_mode, loss_type=loss_type, spike_type=spike_type, bn_type=bn_type, start_spike_layer=start_spike_layer,\
             conv_type=conv_type, pool_pos=pool_pos, sub_act_mask=sub_act_mask, x_thr_scale=x_thr_scale, pooling_type=pooling_type, \
             weight_quantize=weight_quantize, im_size=im_size)
         elif architecture.lower() == 'resnet50':
             model = ResNet50(labels=labels, dataset=dataset, kernel_size=kernel_size,\
             linear_dropout=linear_dropout, conv_dropout = conv_dropout, default_threshold=threshold,\
-            net_mode=net_mode, hoyer_type=hoyer_type, act_mode=act_mode, bn_type=bn_type, start_spike_layer=start_spike_layer,\
+            net_mode=net_mode, loss_type=loss_type, spike_type=spike_type, bn_type=bn_type, start_spike_layer=start_spike_layer,\
             conv_type=conv_type, pool_pos=pool_pos, sub_act_mask=sub_act_mask, x_thr_scale=x_thr_scale, pooling_type=pooling_type, \
             weight_quantize=weight_quantize, im_size=im_size)
         elif architecture.lower() == 'resnet101':
             model = ResNet101(labels=labels, dataset=dataset, kernel_size=kernel_size,\
             linear_dropout=linear_dropout, conv_dropout = conv_dropout, default_threshold=threshold,\
-            net_mode=net_mode, hoyer_type=hoyer_type, act_mode=act_mode, bn_type=bn_type, start_spike_layer=start_spike_layer,\
+            net_mode=net_mode, loss_type=loss_type, spike_type=spike_type, bn_type=bn_type, start_spike_layer=start_spike_layer,\
             conv_type=conv_type, pool_pos=pool_pos, sub_act_mask=sub_act_mask, x_thr_scale=x_thr_scale, pooling_type=pooling_type, \
             weight_quantize=weight_quantize, im_size=im_size)
         elif architecture.lower() == 'resnet152':
             model = ResNet152(labels=labels, dataset=dataset, kernel_size=kernel_size,\
             linear_dropout=linear_dropout, conv_dropout = conv_dropout, default_threshold=threshold,\
-            net_mode=net_mode, hoyer_type=hoyer_type, act_mode=act_mode, bn_type=bn_type, start_spike_layer=start_spike_layer,\
+            net_mode=net_mode, loss_type=loss_type, spike_type=spike_type, bn_type=bn_type, start_spike_layer=start_spike_layer,\
             conv_type=conv_type, pool_pos=pool_pos, sub_act_mask=sub_act_mask, x_thr_scale=x_thr_scale, pooling_type=pooling_type, \
             weight_quantize=weight_quantize, im_size=im_size)
     f.write('\n{}'.format(model))
@@ -1214,6 +1179,8 @@ if __name__ == '__main__':
             lr = learning_rate)
     if local_rank == 0:
         f.write('\n {}'.format(optimizer))
+
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda step : (1.0-step/args.epochs), last_epoch=-1)
 
     if gpu_nums > 1:
         model = torch.nn.parallel.DistributedDataParallel(model)

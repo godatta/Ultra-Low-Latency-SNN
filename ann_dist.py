@@ -1,23 +1,18 @@
 import argparse
-from operator import ge
 from models.vgg_tunable_threshold_tdbn import VGG_TUNABLE_THRESHOLD_tdbn
 # from models.vgg import VGG
 # from models.resnet_tunable_threshold import *
-from models.birealnet import birealnet18,birealnet34
+from models.hoyer_resnet import birealnet18
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from torchvision import datasets, transforms, models
-from torchviz import make_dot
-from matplotlib import pyplot as plt
+from torchvision import datasets, transforms
 import pdb
 import sys
 import datetime
 import os
 import numpy as np
-import json
-import pickle
 
 from torch.utils.data.distributed import DistributedSampler
 
