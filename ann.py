@@ -16,8 +16,8 @@ import datetime
 import os
 import numpy as np
 import copy
-import cv2
-from tqdm import tqdm
+# import cv2
+# from tqdm import tqdm
 from math import cos, pi
 from utils.net_utils import *
 # from torch.utils.tensorboard import SummaryWriter
@@ -204,8 +204,9 @@ def train(epoch, loader):
         #     total_loss += thr_loss
         # with torch.autograd.detect_anomaly():
         total_loss.backward(inputs = list(model.parameters()))
-        
-        optimizer.step()       
+
+        optimizer.step()     
+        scheduler.step()  
         losses.update(loss.item(),data_size)
         act_losses.update(act_loss, data_size)
         total_losses.update(total_loss.item(), data_size)
@@ -254,7 +255,6 @@ def train(epoch, loader):
     # writer.add_scalar('Relu/less_eq_0', relu_total_num[0]/relu_total_num[-1]*100, epoch)
     # writer.add_scalar('Relu/between_0_thr', relu_total_num[1]/relu_total_num[-1]*100, epoch)
     # writer.add_scalar('Relu/laeger_eq_thr', relu_total_num[2]/relu_total_num[-1]*100, epoch)
-    scheduler.step()
     if local_rank == 0:
         nameed_params = model.named_parameters() if gpu_nums == 1 else model.module.named_parameters()
         model_thrs = []
@@ -331,7 +331,7 @@ def simple_train(epoch, loader):
             total_loss.backward(inputs = list(model.parameters()))
             
             optimizer.step()       
-            
+            scheduler.step()  
             losses.update(loss.item(),data_size)
             act_losses.update(act_loss, data_size)
             total_losses.update(total_loss.item(), data_size)
@@ -351,7 +351,6 @@ def simple_train(epoch, loader):
                 top5.avg,
                 datetime.timedelta(seconds=(datetime.datetime.now() - start_time).seconds)
                 ))
-    scheduler.step()
     if local_rank == 0:
         if use_wandb:
             wandb.log({
@@ -767,15 +766,20 @@ if __name__ == '__main__':
     parser.add_argument('--weight_quantize',        default=0,                  type=int,       help='how many bit to quantize the weights')
     parser.add_argument('--qat',                    default=0,                  type=int,       help='how many bit to quantization aware training')
     parser.add_argument('--visualize',              action='store_true',                        help='visualize the attention map')
-    parser.add_argument('--warmup',                 action='store_true',                        help='set lower initial learning rate to warm up the training')
+    parser.add_argument('--warmup',                 default=0,                  type=int,       help='set lower initial learning rate to warm up the training')
+    parser.add_argument('--T_max',                  default=0,                  type=int,       help='for cos decay')
+    parser.add_argument('--lr_max',                 default=0,                  type=float,     help='for cos decay')
+    parser.add_argument('--lr_min',                 default=0,                  type=float,     help='for cos decay')
     parser.add_argument('--reg_thr',                action='store_true',                        help='if add weight decay for threshold')
     parser.add_argument('--use_hook',               action='store_true',                        help='use hook to check the dist of the output of every layer')
+    parser.add_argument('--use_apex',               action='store_true',                        help='use mixed precision training')
+
 
     parser.add_argument('--nodes',                  default=1,                  type=int,       help='nodes')
     parser.add_argument('--rank',                   default=0,                  type=int,       help='ranking within the nodes')
 
 
-    args=parser.parse_args()
+    args=parser.parse_args() 
 
     os.environ['CUDA_VISIBLE_DEVICES'] = args.devices
 
@@ -832,6 +836,9 @@ if __name__ == '__main__':
     qat             = args.qat
     reg_thr         = args.reg_thr
     use_hook        = args.use_hook
+    lr_decay        = args.lr_decay
+    warmup          = args.warmup
+    use_apex        = args.use_apex
     gpu_nums        = (len(args.devices)+1) // 2
 
     if gpu_nums > 1:
@@ -1179,7 +1186,21 @@ if __name__ == '__main__':
     if local_rank == 0:
         f.write('\n {}'.format(optimizer))
 
-    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda step : (1.0-step/args.epochs), last_epoch=-1)
+    if lr_decay == 'step':
+        lr_interval_iter = lr_interval * len(train_loader)
+        lambda0 = lambda step : 1.0/lr_reduce if step in lr_interval_iter else 1.0
+    elif lr_decay == 'cos':
+        warm_up_iter = warmup
+        lambda0 = lambda cur_iter: (cur_iter+1) / warm_up_iter if  cur_iter < warm_up_iter else \
+        (1 + math.cos(math.pi * (cur_iter - warm_up_iter) / (args.T_max - warm_up_iter))) / 2
+        # (args.lr_min + 0.5*(args.lr_max-args.lr_min)*(1.0+math.cos( (cur_iter-warm_up_iter)/(args.T_max-warm_up_iter)*math.pi)))/learning_rate
+    elif lr_decay == 'linear':
+        lambda0 = lambda step : (1.0-step/(args.epochs*len(train_loader)))
+    
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda0, last_epoch=-1)
+
+    if use_apex:
+        model, optimizer = amp.initialize(model, optimizer, opt_level='O1')
 
     if gpu_nums > 1:
         model = torch.nn.parallel.DistributedDataParallel(model)
@@ -1254,8 +1275,9 @@ if __name__ == '__main__':
 
     train_func = train if dataset == 'CIFAR10' else simple_train
     test_func = test if dataset == 'CIFAR10' else simple_test
-
-    for epoch in range(1, epochs+1):    
+    # train_func = simple_train
+    # test_func = simple_test
+    for epoch in range(1, epochs+1): 
         start_time = datetime.datetime.now()
         if not test_only:
             train_func(epoch, train_loader)

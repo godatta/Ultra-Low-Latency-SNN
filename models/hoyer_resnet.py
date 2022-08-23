@@ -157,19 +157,29 @@ class Bottleneck(nn.Module):
         self.shortcut = nn.Sequential()
         if stride != 1 or in_planes != self.expansion*planes:
             # self.shortcut = downsample
-            # 2. spike + conv(s=2) + bn
+            # 1. spike + conv(s=2) + bn
             self.shortcut = nn.Sequential(
                 HoyerBiAct(num_features=in_planes, spike_type=spike_type, x_thr_scale=x_thr_scale),
                 nn.Conv2d(in_planes, self.expansion*planes,
                           kernel_size=1, stride=stride, bias=False),
-                nn.BatchNorm2d(self.expansion*planes)
+                # nn.BatchNorm2d(self.expansion*planes) # 08211953 without this line
             )
+            # 2.  maxpool + bn + spike + conv1x1 
+            # self.shortcut = nn.Sequential(
+            #     nn.MaxPool2d(kernel_size=2, stride=stride, padding=1),
+            #     nn.BatchNorm2d(in_planes),
+            #     HoyerBiAct(num_features=in_planes, spike_type=spike_type, x_thr_scale=x_thr_scale),
+            #     conv1x1(in_planes, planes * self.expansion),
+            # )
+
 
     def forward(self, x):
         out = self.bn1(self.conv1(self.binary_act1(x)))
         out = self.bn2(self.conv2(self.binary_act2(out)))
-        out = self.bn3(self.conv3(self.binary_act3(out)))
+        # out = self.bn3(self.conv3(self.binary_act3(out)))
+        out = self.conv3(self.binary_act3(out))
         out += self.shortcut(x)
+        out = self.bn3(out)
         return out
 
 class HoyerResNet(nn.Module):
@@ -219,7 +229,7 @@ class HoyerResNet(nn.Module):
     def _make_layer(self, block, planes, blocks, stride=1):
         downsample = None
         if stride != 1 or self.inplanes != planes * block.expansion:
-            # 1.0 maxpool + bn + spike + conv1x1
+            # 1.0 maxpool + bn + spike + conv1x1 for resnet18 with vgg, it is the best
             downsample = nn.Sequential(
                 nn.MaxPool2d(kernel_size=2, stride=stride),
                 nn.BatchNorm2d(self.inplanes),
@@ -227,6 +237,21 @@ class HoyerResNet(nn.Module):
                 # nn.AvgPool2d(kernel_size=2, stride=stride),
                 conv1x1(self.inplanes, planes * block.expansion),
             )
+            # 2.0
+            # downsample = nn.Sequential(
+            #     nn.MaxPool2d(kernel_size=2, stride=stride),
+            #     HoyerBiAct(num_features=self.inplanes, spike_type=self.spike_type, x_thr_scale=self.x_thr_scale, if_spike=self.if_spike),
+            #     # nn.AvgPool2d(kernel_size=2, stride=stride),
+            #     conv1x1(self.inplanes, planes * block.expansion),
+            #     nn.BatchNorm2d(planes * block.expansion),
+            # )
+            # 3.0 spike + conv(s=2) + bn
+            # downsample = nn.Sequential(
+            #     HoyerBiAct(num_features=self.inplanes, spike_type=self.spike_type, x_thr_scale=self.x_thr_scale),
+            #     nn.Conv2d(self.inplanes, block.expansion*planes,
+            #               kernel_size=1, stride=stride, bias=False),
+            #     nn.BatchNorm2d(block.expansion*planes)
+            # )
 
         layers = []
         layers.append(block(self.inplanes, planes, stride, downsample, spike_type=self.spike_type, x_thr_scale=self.x_thr_scale))

@@ -64,7 +64,7 @@ class HoyerBiAct(nn.Module):
 
     def forward(self, input):
         # calculate running estimates
-        input = input / self.threshold
+        input = input / torch.abs(self.threshold)
         # input = torch.clamp(input, min=0.0, max=1.0)
         if self.training:
             clamped_input = torch.clamp((input).clone().detach(), min=0.0, max=1.0)
