@@ -1187,7 +1187,8 @@ if __name__ == '__main__':
         f.write('\n {}'.format(optimizer))
 
     if lr_decay == 'step':
-        lr_interval_iter = lr_interval * len(train_loader)
+        lr_interval_iter = [lr * len(train_loader) for lr in lr_interval]
+        print(lr_interval_iter)
         lambda0 = lambda step : 1.0/lr_reduce if step in lr_interval_iter else 1.0
     elif lr_decay == 'cos':
         warm_up_iter = warmup
@@ -1198,7 +1199,6 @@ if __name__ == '__main__':
         lambda0 = lambda step : (1.0-step/(args.epochs*len(train_loader)))
     
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda0, last_epoch=-1)
-
     if use_apex:
         model, optimizer = amp.initialize(model, optimizer, opt_level='O1')
 

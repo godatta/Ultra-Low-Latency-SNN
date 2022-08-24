@@ -158,25 +158,27 @@ class Bottleneck(nn.Module):
         if stride != 1 or in_planes != self.expansion*planes:
             # self.shortcut = downsample
             # 1. spike + conv(s=2) + bn
-            self.shortcut = nn.Sequential(
-                HoyerBiAct(num_features=in_planes, spike_type=spike_type, x_thr_scale=x_thr_scale),
-                nn.Conv2d(in_planes, self.expansion*planes,
-                          kernel_size=1, stride=stride, bias=False),
-                # nn.BatchNorm2d(self.expansion*planes) # 08211953 without this line
-            )
-            # 2.  maxpool + bn + spike + conv1x1 
             # self.shortcut = nn.Sequential(
-            #     nn.MaxPool2d(kernel_size=2, stride=stride, padding=1),
-            #     nn.BatchNorm2d(in_planes),
             #     HoyerBiAct(num_features=in_planes, spike_type=spike_type, x_thr_scale=x_thr_scale),
-            #     conv1x1(in_planes, planes * self.expansion),
+            #     nn.Conv2d(in_planes, self.expansion*planes,
+            #               kernel_size=1, stride=stride, bias=False),
+            #     nn.BatchNorm2d(self.expansion*planes) # 08211953 without this line
             # )
+            # 2.  maxpool + bn + spike + conv1x1 
+            self.shortcut = nn.Sequential(
+                nn.MaxPool2d(kernel_size=stride, stride=stride),
+                nn.BatchNorm2d(in_planes),
+                HoyerBiAct(num_features=in_planes, spike_type=spike_type, x_thr_scale=x_thr_scale),
+                conv1x1(in_planes, planes * self.expansion),
+            )
 
 
     def forward(self, x):
+        # print(f'x.shape: {x.shape}')
         out = self.bn1(self.conv1(self.binary_act1(x)))
         out = self.bn2(self.conv2(self.binary_act2(out)))
         # out = self.bn3(self.conv3(self.binary_act3(out)))
+        # out += self.shortcut(x)
         out = self.conv3(self.binary_act3(out))
         out += self.shortcut(x)
         out = self.bn3(out)
