@@ -1,9 +1,11 @@
 import argparse
+from tabnanny import verbose
 
 from models.vgg_tunable_threshold_tdbn import VGG_TUNABLE_THRESHOLD_tdbn
 from models.hoyer_resnet import resnet18, resnet20, resnet34_cifar, resnet34, ResNet50, ResNet101, ResNet152
 from models.self_modules import HoyerBiAct
 from models.vgg_tunable_threshold_tdbn_imagenet import VGG_TUNABLE_THRESHOLD_tdbn_imagenet
+from models.mobilenetv3 import MobileNetV3_Small, MobileNetV3_Large
 # from models.resnet_tunable_threshold import *
 import torch
 import torch.nn as nn
@@ -17,7 +19,7 @@ import os
 import numpy as np
 import copy
 # import cv2
-# from tqdm import tqdm
+from tqdm import tqdm
 from math import cos, pi
 from utils.net_utils import *
 # from torch.utils.tensorboard import SummaryWriter
@@ -159,6 +161,7 @@ def train(epoch, loader):
     #     for param_group in optimizer.param_groups:
     #         param_group['lr'] = param_group['lr'] / lr_reduce
     #         learning_rate = param_group['lr']
+    # chech learning rate
     for param_group in optimizer.param_groups:
         learning_rate = param_group['lr']
     
@@ -185,11 +188,6 @@ def train(epoch, loader):
         
         # adjust_learning_rate(optimizer=optimizer, epoch=epoch, iteration=batch_idx, num_iter=len(loader))
         optimizer.zero_grad()
-        #output, _ = model(data)
-        # if act_type == 'relu':
-        #     output, model_thr, relu_batch_num, act_out, thr_out = model(data, epoch)
-        # else:
-        # output, model_thr, relu_batch_num, act_out = model(data, epoch)
         # torch.autograd.set_detect_anomaly(True)
         output, act_out = model(data)
         loss = F.cross_entropy(output,target)
@@ -213,10 +211,6 @@ def train(epoch, loader):
 
         prec1, prec5 = accuracy(output, target, topk=(1, 5))
 
-        # pred = output.max(1,keepdim=True)[1]
-        # correct = pred.eq(target.data.view_as(pred)).cpu().sum()
-        # top1.update(correct.item()/data_size, data_size)
-        # top5.update(correct.item()/data_size, data_size)
 
         top1.update(prec1.item(), data_size)
         top5.update(prec5.item(), data_size)
@@ -225,7 +219,6 @@ def train(epoch, loader):
             global all_layers_act
             relu_total_num += all_layers_act
             all_layers_act = torch.tensor([0.0, 0.0, 0.0, 0.0])
-        # relu_total_num += relu_batch_num
         # test_hoyer_thr += model.test_hoyer_thr if gpu_nums == 1 else model.module.test_hoyer_thr
         # torch.cuda.empty_cache()
         if local_rank==0 and ((epoch == 1 and batch_idx < 5) or (dataset == 'IMAGENET' and batch_idx%100==1)):
@@ -384,7 +377,6 @@ def test(epoch, loader):
     with torch.no_grad():
         model.eval()
         total_loss = 0
-        correct = 0
         #dis = []
         total_output = {}
         plot_output = {}
@@ -628,7 +620,6 @@ def simple_test(epoch, loader):
             filename = './trained_models_ann/'+identifier + '.pth'
             if not args.dont_save and not test_only:
                 torch.save(state,filename)
-        #dis = np.array(dis)
         f.write('\nEpoch: {}, best: {:.2f}%, test_loss: {:.4f}, act_loss: {:.4f}, total_test_loss: {:.4f}, top1_acc: {:.2f}%, top5_acc: {:.2f}%, '.format(
             epoch,
             max_accuracy,
@@ -734,7 +725,8 @@ if __name__ == '__main__':
     parser.add_argument('--im_size',                default=None,               type=int,       help='image size')
 
 
-    parser.add_argument('-a','--architecture',      default='VGG16',            type=str,       help='network architecture', choices=['VGG4','VGG6','VGG9','VGG11','VGG13','VGG16','VGG19','RESNET12','RESNET18','RESNET20','RESNET34', 'RESNET50'])
+    parser.add_argument('-a','--architecture',      default='VGG16',            type=str,       help='network architecture' )
+                                                    # choices=['VGG16','VGG19','RESNET12','RESNET18','RESNET20','RESNET34', 'RESNET50'])
     parser.add_argument('-rthr','--relu_threshold', default=0.5,                type=float,     help='threshold value for the RELU activation')
     parser.add_argument('--pretrained_ann',         default='',                 type=str,       help='pretrained model to initialize ANN')
     parser.add_argument('--epochs',                 default=300,                type=int,       help='number of training epochs')
@@ -1022,66 +1014,46 @@ if __name__ == '__main__':
         # num_workers actually need to be set accroding to the cpu
         train_loader    = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=batch_size, num_workers=2*gpu_nums, sampler=train_sampler)
         test_loader     = torch.utils.data.DataLoader(dataset=test_dataset, batch_size=batch_size, num_workers=2*gpu_nums, sampler=test_sampler)
-                
+    
+    params_dict = {
+        'labels': labels, 'dataset': dataset, 'kernel_size': kernel_size,
+        'linear_dropout': linear_dropout, 'conv_dropout': conv_dropout, 'default_threshold': threshold,
+        'net_mode': net_mode, 'loss_type': loss_type, 'spike_type': spike_type, 'bn_type': bn_type, 'start_spike_layer': start_spike_layer,
+        'conv_type': conv_type, 'pool_pos': pool_pos, 'sub_act_mask': sub_act_mask, 'x_thr_scale': x_thr_scale, 'pooling_type': pooling_type,
+        'weight_quantize': weight_quantize, 'im_size': im_size,
+    }
+
     if architecture[0:3].lower() == 'vgg' and dataset == 'CIFAR10':
         # act_type == 'tdbn'
-        model = VGG_TUNABLE_THRESHOLD_tdbn(vgg_name=architecture, labels=labels, dataset=dataset, kernel_size=kernel_size,\
-            linear_dropout=linear_dropout, conv_dropout = conv_dropout, default_threshold=threshold,\
-            net_mode=net_mode, loss_type=loss_type, spike_type=spike_type, bn_type=bn_type, start_spike_layer=start_spike_layer,\
-            conv_type=conv_type, pool_pos=pool_pos, sub_act_mask=sub_act_mask, x_thr_scale=x_thr_scale, pooling_type=pooling_type, \
-            weight_quantize=weight_quantize, im_size=im_size)
+        model = VGG_TUNABLE_THRESHOLD_tdbn(**params_dict)
+        # model = VGG_TUNABLE_THRESHOLD_tdbn(vgg_name=architecture, labels=labels, dataset=dataset, kernel_size=kernel_size,\
+        #     linear_dropout=linear_dropout, conv_dropout = conv_dropout, default_threshold=threshold,\
+        #     net_mode=net_mode, loss_type=loss_type, spike_type=spike_type, bn_type=bn_type, start_spike_layer=start_spike_layer,\
+        #     conv_type=conv_type, pool_pos=pool_pos, sub_act_mask=sub_act_mask, x_thr_scale=x_thr_scale, pooling_type=pooling_type, \
+        #     weight_quantize=weight_quantize, im_size=im_size)
     elif architecture[0:3].lower() == 'vgg' and dataset == 'IMAGENET':
-        model = VGG_TUNABLE_THRESHOLD_tdbn_imagenet(vgg_name=architecture, labels=labels, dataset=dataset, kernel_size=kernel_size,\
-            linear_dropout=linear_dropout, conv_dropout = conv_dropout, default_threshold=threshold,\
-            net_mode=net_mode, loss_type=loss_type, spike_type=spike_type, bn_type=bn_type, start_spike_layer=start_spike_layer,\
-            conv_type=conv_type, pool_pos=pool_pos, sub_act_mask=sub_act_mask, x_thr_scale=x_thr_scale, pooling_type=pooling_type, \
-            weight_quantize=weight_quantize, im_size=im_size)
+        model = VGG_TUNABLE_THRESHOLD_tdbn_imagenet(**params_dict)
 
     elif architecture[0:3].lower() == 'res':
-        if architecture.lower() == 'resnet12':
-            model = ResNet12(labels=labels, dropout=dropout, default_threshold=threshold)
-        elif architecture.lower() == 'resnet18':
-            model = resnet18(labels=labels, dataset=dataset, kernel_size=kernel_size,\
-            linear_dropout=linear_dropout, conv_dropout = conv_dropout, default_threshold=threshold,\
-            net_mode=net_mode, loss_type=loss_type, spike_type=spike_type, bn_type=bn_type, start_spike_layer=start_spike_layer,\
-            conv_type=conv_type, pool_pos=pool_pos, sub_act_mask=sub_act_mask, x_thr_scale=x_thr_scale, pooling_type=pooling_type, \
-            weight_quantize=weight_quantize, im_size=im_size)
+        if architecture.lower() == 'resnet18':
+            model = resnet18(**params_dict)
         elif architecture.lower() == 'resnet20':
-            model = resnet20(labels=labels, dataset=dataset, kernel_size=kernel_size,\
-            linear_dropout=linear_dropout, conv_dropout = conv_dropout, default_threshold=threshold,\
-            net_mode=net_mode, loss_type=loss_type, spike_type=spike_type, bn_type=bn_type, start_spike_layer=start_spike_layer,\
-            conv_type=conv_type, pool_pos=pool_pos, sub_act_mask=sub_act_mask, x_thr_scale=x_thr_scale, pooling_type=pooling_type, \
-            weight_quantize=weight_quantize, im_size=im_size)
+            model = resnet20(**params_dict)
         elif architecture.lower() == 'resnet34':
-            model = resnet34(labels=labels, dataset=dataset, kernel_size=kernel_size,\
-            linear_dropout=linear_dropout, conv_dropout = conv_dropout, default_threshold=threshold,\
-            net_mode=net_mode, loss_type=loss_type, spike_type=spike_type, bn_type=bn_type, start_spike_layer=start_spike_layer,\
-            conv_type=conv_type, pool_pos=pool_pos, sub_act_mask=sub_act_mask, x_thr_scale=x_thr_scale, pooling_type=pooling_type, \
-            weight_quantize=weight_quantize, im_size=im_size)
+            model = resnet34(**params_dict)
         elif architecture.lower() == 'resnet34_cifar':
-            model = resnet34_cifar(labels=labels, dataset=dataset, kernel_size=kernel_size,\
-            linear_dropout=linear_dropout, conv_dropout = conv_dropout, default_threshold=threshold,\
-            net_mode=net_mode, loss_type=loss_type, spike_type=spike_type, bn_type=bn_type, start_spike_layer=start_spike_layer,\
-            conv_type=conv_type, pool_pos=pool_pos, sub_act_mask=sub_act_mask, x_thr_scale=x_thr_scale, pooling_type=pooling_type, \
-            weight_quantize=weight_quantize, im_size=im_size)
+            model = resnet34_cifar(**params_dict)
         elif architecture.lower() == 'resnet50':
-            model = ResNet50(labels=labels, dataset=dataset, kernel_size=kernel_size,\
-            linear_dropout=linear_dropout, conv_dropout = conv_dropout, default_threshold=threshold,\
-            net_mode=net_mode, loss_type=loss_type, spike_type=spike_type, bn_type=bn_type, start_spike_layer=start_spike_layer,\
-            conv_type=conv_type, pool_pos=pool_pos, sub_act_mask=sub_act_mask, x_thr_scale=x_thr_scale, pooling_type=pooling_type, \
-            weight_quantize=weight_quantize, im_size=im_size)
+            model = ResNet50(**params_dict)
         elif architecture.lower() == 'resnet101':
-            model = ResNet101(labels=labels, dataset=dataset, kernel_size=kernel_size,\
-            linear_dropout=linear_dropout, conv_dropout = conv_dropout, default_threshold=threshold,\
-            net_mode=net_mode, loss_type=loss_type, spike_type=spike_type, bn_type=bn_type, start_spike_layer=start_spike_layer,\
-            conv_type=conv_type, pool_pos=pool_pos, sub_act_mask=sub_act_mask, x_thr_scale=x_thr_scale, pooling_type=pooling_type, \
-            weight_quantize=weight_quantize, im_size=im_size)
+            model = ResNet101(**params_dict)
         elif architecture.lower() == 'resnet152':
-            model = ResNet152(labels=labels, dataset=dataset, kernel_size=kernel_size,\
-            linear_dropout=linear_dropout, conv_dropout = conv_dropout, default_threshold=threshold,\
-            net_mode=net_mode, loss_type=loss_type, spike_type=spike_type, bn_type=bn_type, start_spike_layer=start_spike_layer,\
-            conv_type=conv_type, pool_pos=pool_pos, sub_act_mask=sub_act_mask, x_thr_scale=x_thr_scale, pooling_type=pooling_type, \
-            weight_quantize=weight_quantize, im_size=im_size)
+            model = ResNet152(**params_dict)
+    elif architecture.lower() == 'mobilenetv3_small': 
+        model = MobileNetV3_Small(**params_dict)
+    elif architecture.lower() == 'mobilenetv3_large':
+        model = MobileNetV3_Large(**params_dict)
+    print(architecture.lower())
     f.write('\n{}'.format(model))
     
     #CIFAR100 sometimes has problem to start training
@@ -1185,11 +1157,15 @@ if __name__ == '__main__':
             lr = learning_rate)
     if local_rank == 0:
         f.write('\n {}'.format(optimizer))
-
     if lr_decay == 'step':
+        lr_list = np.arange(1000)
         lr_interval_iter = [lr * len(train_loader) for lr in lr_interval]
-        print(lr_interval_iter)
-        lambda0 = lambda step : 1.0/lr_reduce if step in lr_interval_iter else 1.0
+        def lr_scale(step):
+            for i, val in enumerate(lr_interval_iter):
+                if step < val:
+                    return i
+            return i + 1
+        lambda0 = lambda step : 1.0/(lr_reduce**lr_scale(step))
     elif lr_decay == 'cos':
         warm_up_iter = warmup
         lambda0 = lambda cur_iter: (cur_iter+1) / warm_up_iter if  cur_iter < warm_up_iter else \
@@ -1273,10 +1249,10 @@ if __name__ == '__main__':
     
         exit()
 
-    train_func = train if dataset == 'CIFAR10' else simple_train
-    test_func = test if dataset == 'CIFAR10' else simple_test
-    # train_func = simple_train
-    # test_func = simple_test
+    # train_func = train if dataset == 'CIFAR10'  else simple_train
+    # test_func = test if dataset == 'CIFAR10' else simple_test
+    train_func = simple_train
+    test_func = simple_test
     for epoch in range(1, epochs+1): 
         start_time = datetime.datetime.now()
         if not test_only:
