@@ -934,8 +934,8 @@ if __name__ == '__main__':
     elif dataset == 'IMAGENET':
         # traindir    = os.path.join('/m2/data/imagenet', 'train')
         # valdir      = os.path.join('/m2/data/imagenet', 'val')
-        traindir    = os.path.join('/nas/vista-ssd01/batl/public_datasets/ImageNet', 'train')
-        valdir      = os.path.join('/nas/vista-ssd01/batl/public_datasets/ImageNet', 'val')
+        traindir    = os.path.join('/home/ubuntu/data/imagenet', 'train')
+        valdir      = os.path.join('/home/ubuntu/data/imagenet', 'val')
         if im_size == None:
             im_size = 224
             train_dataset    = datasets.ImageFolder(
@@ -1053,7 +1053,7 @@ if __name__ == '__main__':
         model = MobileNetV3_Small(**params_dict)
     elif architecture.lower() == 'mobilenetv3_large':
         model = MobileNetV3_Large(**params_dict)
-    print(architecture.lower())
+    # print(architecture.lower())
     f.write('\n{}'.format(model))
     
     #CIFAR100 sometimes has problem to start training
@@ -1082,10 +1082,13 @@ if __name__ == '__main__':
                 if key[:9] == 'threshold':
                     f.write('{:.4f}, '.format(state['state_dict'][key]))
                     state['state_dict'][key] = init_state[key]
-
-        missing_keys, unexpected_keys = model.load_state_dict(state['state_dict'], strict=False)
-        f.write('\n Missing keys : {}, Unexpected Keys: {}'.format(missing_keys, unexpected_keys))        
-        f.write('\n Info: Accuracy of loaded ANN model: {}'.format(state['accuracy']))
+        state_copy = {}
+        for key in state['state_dict']:
+            state_copy[key[7:]] = state['state_dict'][key]
+        missing_keys, unexpected_keys = model.load_state_dict(state_copy, strict=False)
+        # missing_keys, unexpected_keys = model.load_state_dict(state['state_dict'], strict=False)
+        f.write('\n Missing keys : {}\n Unexpected Keys: {}'.format(missing_keys, unexpected_keys))        
+        # f.write('\n Info: Accuracy of loaded ANN model: {}'.format(state['accuracy']))
         # f.write('\n The threshold in ann is: {}'.format([model.threshold[key].data for key in model.threshold]))
         # if use_x_scale:
         #     model.threshold_update()
@@ -1249,10 +1252,10 @@ if __name__ == '__main__':
     
         exit()
 
-    # train_func = train if dataset == 'CIFAR10'  else simple_train
-    # test_func = test if dataset == 'CIFAR10' else simple_test
-    train_func = simple_train
-    test_func = simple_test
+    train_func = train if dataset == 'CIFAR10'  else simple_train
+    test_func = test if dataset == 'CIFAR10' else simple_test
+    # train_func = simple_train
+    # test_func = simple_test
     for epoch in range(1, epochs+1): 
         start_time = datetime.datetime.now()
         if not test_only:
@@ -1267,6 +1270,6 @@ if __name__ == '__main__':
         visualize(visual_loader, to_path=f'./visualization/{identifier}')
 
     f.write('\n End on time: {}'.format(datetime.datetime.now()))      
-    f.write('\n Highest accuracy: {:.4f}'.format(max_accuracy))
+    f.write('\n Highest accuracy: {:.4f}\n'.format(max_accuracy))
     print(identifier)
 

@@ -200,7 +200,7 @@ class Bottleneck(nn.Module):
 class HoyerResNet(nn.Module):
     def __init__(self, block, num_blocks, labels=10, dataset = 'CIFAR10', kernel_size=3, linear_dropout=0.1, conv_dropout=0.1, default_threshold=1.0, \
         net_mode='ori', loss_type='sum', spike_type = 'sum', bn_type='bn', start_spike_layer=50, conv_type='ori', pool_pos='after_relu', sub_act_mask=False, \
-        x_thr_scale=1.0, pooling_type='max', weight_quantize=1, im_size=224):
+        x_thr_scale=1.0, pooling_type='max', weight_quantize=1, im_size=224, last_bn_c=512):
         
         super(HoyerResNet, self).__init__()
         self.inplanes = 64
@@ -236,7 +236,7 @@ class HoyerResNet(nn.Module):
         self.stage2 = self._make_layer(block, 128, num_blocks[1], stride=2)
         self.stage3 = self._make_layer(block, 256, num_blocks[2], stride=2)
         self.stage4 = self._make_layer(block, 512, num_blocks[3], stride=2)
-        self.bn_last = nn.BatchNorm2d(2048)
+        self.bn_last = nn.BatchNorm2d(last_bn_c)
         self.fc_act = HoyerBiAct(spike_type='sum', x_thr_scale=self.x_thr_scale, if_spike=self.if_spike)
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         self.fc = nn.Linear(512 * block.expansion, labels)
@@ -316,7 +316,7 @@ class HoyerResNet(nn.Module):
 
 def resnet18(pretrained=False, **kwargs):
     """Constructs a BiRealNet-18 model. """
-    model = HoyerResNet(BasicBlock, [4, 4, 4, 4], **kwargs)
+    model = HoyerResNet(BasicBlock, [4, 4, 4, 4],last_bn_c=512, **kwargs)
     return model
 
 def resnet20(pretrained=False, **kwargs):
@@ -336,7 +336,7 @@ def resnet34(pretrained=False, **kwargs):
 
 
 def ResNet50(pretrained=False, **kwargs):
-    return HoyerResNet(Bottleneck, [3, 4, 6, 3], **kwargs)
+    return HoyerResNet(Bottleneck, [3, 4, 6, 3],last_bn_c=2048, **kwargs)
 
 
 def ResNet101(pretrained=False, **kwargs):
