@@ -1,28 +1,35 @@
 # 1.
-# python ann.py --dataset CIFAR10 --batch_size 128 --architecture VGG16 \
+# python ann.py --dataset CIFAR10 --batch_size 128 --im_size 32 --architecture VGG16 \
 # --learning_rate 1e-4 --epochs 400 --lr_interval '0.60 0.80 0.90' --lr_reduce 5 --relu_threshold 1.0 \
-# --optimizer Adam --weight_decay 0.0001 --momentum 0.95 --amsgrad True --devices 0 --seed 0 --linear_dropout 0.1 --conv_dropout 0.1 \
-# --hoyer_decay 1e-9 --net_mode 'ori' --pool_pos 'before_relu' --log --use_wandb --use_hook \
-# --act_mode 'sum' --bn_type 'bn' --hoyer_type 'sum' --start_spike_layer 0 --x_thr_scale 0.618 --weight_quantize 0 \
-# --description 'test if calculate hoyer loss before spike, small hoyer loss' 
-
+# --optimizer Adam --weight_decay 0.0001 --momentum 0.9 --amsgrad True --devices 0 --seed 0 --linear_dropout 0.1 --conv_dropout 0.1 \
+# --hoyer_decay 1e-8 --net_mode 'ori' --pool_pos 'before_relu'  --use_hook  --reg_thr \
+# --spike_type 'sum' --bn_type 'bn' --loss_type 'sum' --start_spike_layer 0 --x_thr_scale 1.0 --weight_quantize 0 \
+# --description 'resnet18 spike->conv->bn and bn last, test' --warmup 1000 --lr_decay 'step' --log
 # --pretrained_ann 'trained_models_ann/ann_vgg16_cifar10_202206241620.pth' --use_wandb --log
 
 # 1. RESNET20 + CIFAR10
-# python ann.py --dataset CIFAR10 --batch_size 128 --im_size 32 --architecture mobilenetv3_small \
-# --learning_rate 1e-2 --epochs 400 --lr_interval '0.60 0.80 0.90' --lr_reduce 5 --relu_threshold 1.0 \
-# --optimizer SGD --weight_decay 0.0001 --momentum 0.9 --amsgrad True --devices 0 --seed 0 --linear_dropout 0 --conv_dropout 0 \
-# --hoyer_decay 0 --net_mode 'ori' --pool_pos 'before_relu'  --use_hook  --reg_thr --log \
-# --spike_type 'sum' --bn_type 'bn' --loss_type 'sum' --start_spike_layer 0 --x_thr_scale 1.0 --weight_quantize 0 \
-# --description 'mobilenetv3 test' --warmup 1000 --lr_decay 'step' --use_wandb
+torchrun --nproc_per_node=8 --master_port 29518 ann.py --dataset CIFAR10 --batch_size 64 --im_size 32 --architecture RESNET50 \
+--learning_rate 1e-1 --epochs 400 --lr_interval '0.60 0.80 0.90' --lr_reduce 5 --relu_threshold 1.0 \
+--optimizer SGD --weight_decay 0.0001 --momentum 0.9 --amsgrad True --devices 0,1,2,3,4,5,6,7 --seed 0 --linear_dropout 0 --conv_dropout 0 \
+--hoyer_decay 1e-8 --net_mode 'ori' --pool_pos 'before_relu'  --use_hook  --reg_thr --log \
+--spike_type 'sum' --bn_type 'bn' --loss_type 'sum' --start_spike_layer 0 --x_thr_scale 1.0 --weight_quantize 0 \
+--description 'model test' --warmup 1000 --lr_decay 'step'
+
+# torchrun --nproc_per_node=8 --master_port 29516 ann.py --dataset IMAGENET --batch_size 32 --im_size 224 --architecture VGG16 \
+# --learning_rate 2e-4 --epochs 120 --lr_interval '0.60 0.80 0.90' --lr_reduce 5 --relu_threshold 1.0 \
+# --optimizer Adam --weight_decay 4e-5 --momentum 0.9 --amsgrad True --devices 0,1,2,3,4,5,6,7 --seed 0 --linear_dropout 0.1 --conv_dropout 0.1 \
+# --hoyer_decay 1e-8 --net_mode 'ori' --pool_pos 'before_relu'  --use_hook  --reg_thr --log \
+# --spike_type 'cw' --bn_type 'bn' --loss_type 'sum' --start_spike_layer 0 --x_thr_scale 1.0 --weight_quantize 0 \
+# --description 'resnet18 spike->conv->bn and bn last, test' --warmup 1000 --lr_decay 'step' --use_wandb 
+# --pretrained_ann 'trained_models_ann/ann_resnet18_imagenet_202209040854.pth'
 
 # put bn after add res, --log --use_wandb 
-torchrun --nproc_per_node=7 ann.py --dataset IMAGENET --batch_size 64 --im_size 224 --architecture RESNET18 \
---learning_rate 5e-4 --epochs 150 --lr_interval '0.60 0.80 0.90' --lr_reduce 5 --relu_threshold 1.0 \
---optimizer Adam --weight_decay 0.0005 --momentum 0.9 --amsgrad True --devices 0,1,2,3,4,5,6 --seed 0 --linear_dropout 0 --conv_dropout 0 \
---net_mode 'ori' --log --pool_pos 'before_relu' --bn_type 'bn' \
---spike_type 'sum' --loss_type 'sum' --hoyer_decay 2e-9 --start_spike_layer 0 --x_thr_scale 1.0 --weight_quantize 0 \
---description 'test resnet50 sum, forward 2.0, , downsaple 2.0 with bn for bottleneck' --use_hook --reg_thr --warmup 1000 --lr_decay 'step'
+# torchrun --nproc_per_node=7 ann.py --dataset IMAGENET --batch_size 64 --im_size 224 --architecture RESNET18 \
+# --learning_rate 5e-4 --epochs 150 --lr_interval '0.60 0.80 0.90' --lr_reduce 5 --relu_threshold 1.0 \
+# --optimizer Adam --weight_decay 0.0005 --momentum 0.9 --amsgrad True --devices 0,1,2,3,4,5,6 --seed 0 --linear_dropout 0 --conv_dropout 0 \
+# --net_mode 'ori' --log --pool_pos 'before_relu' --bn_type 'bn' \
+# --spike_type 'sum' --loss_type 'sum' --hoyer_decay 2e-9 --start_spike_layer 0 --x_thr_scale 1.0 --weight_quantize 0 \
+# --description 'test resnet50 sum, forward 2.0, , downsaple 2.0 with bn for bottleneck' --use_hook --reg_thr --warmup 1000 --lr_decay 'step'
 
 # --description 'resnet20 test spike->conv->bn without dropout, layer wise hoyer_reg '  --use_wandb
 

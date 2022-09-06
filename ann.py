@@ -1023,16 +1023,17 @@ if __name__ == '__main__':
         'weight_quantize': weight_quantize, 'im_size': im_size,
     }
 
-    if architecture[0:3].lower() == 'vgg' and dataset == 'CIFAR10':
+    if architecture[0:3].lower() == 'vgg':
         # act_type == 'tdbn'
-        model = VGG_TUNABLE_THRESHOLD_tdbn(**params_dict)
+        # model = VGG_TUNABLE_THRESHOLD_tdbn(**params_dict)
+        model = VGG_TUNABLE_THRESHOLD_tdbn_imagenet(**params_dict)
         # model = VGG_TUNABLE_THRESHOLD_tdbn(vgg_name=architecture, labels=labels, dataset=dataset, kernel_size=kernel_size,\
         #     linear_dropout=linear_dropout, conv_dropout = conv_dropout, default_threshold=threshold,\
         #     net_mode=net_mode, loss_type=loss_type, spike_type=spike_type, bn_type=bn_type, start_spike_layer=start_spike_layer,\
         #     conv_type=conv_type, pool_pos=pool_pos, sub_act_mask=sub_act_mask, x_thr_scale=x_thr_scale, pooling_type=pooling_type, \
         #     weight_quantize=weight_quantize, im_size=im_size)
-    elif architecture[0:3].lower() == 'vgg' and dataset == 'IMAGENET':
-        model = VGG_TUNABLE_THRESHOLD_tdbn_imagenet(**params_dict)
+    # elif architecture[0:3].lower() == 'vgg' and dataset == 'IMAGENET':
+    #     model = VGG_TUNABLE_THRESHOLD_tdbn_imagenet(**params_dict)
 
     elif architecture[0:3].lower() == 'res':
         if architecture.lower() == 'resnet18':
@@ -1082,11 +1083,11 @@ if __name__ == '__main__':
                 if key[:9] == 'threshold':
                     f.write('{:.4f}, '.format(state['state_dict'][key]))
                     state['state_dict'][key] = init_state[key]
-        state_copy = {}
-        for key in state['state_dict']:
-            state_copy[key[7:]] = state['state_dict'][key]
-        missing_keys, unexpected_keys = model.load_state_dict(state_copy, strict=False)
-        # missing_keys, unexpected_keys = model.load_state_dict(state['state_dict'], strict=False)
+        # state_copy = {}
+        # for key in state['state_dict']:
+        #     state_copy[key[7:]] = state['state_dict'][key]
+        # missing_keys, unexpected_keys = model.load_state_dict(state_copy, strict=False)
+        missing_keys, unexpected_keys = model.load_state_dict(state['state_dict'], strict=False)
         f.write('\n Missing keys : {}\n Unexpected Keys: {}'.format(missing_keys, unexpected_keys))        
         # f.write('\n Info: Accuracy of loaded ANN model: {}'.format(state['accuracy']))
         # f.write('\n The threshold in ann is: {}'.format([model.threshold[key].data for key in model.threshold]))
@@ -1252,10 +1253,10 @@ if __name__ == '__main__':
     
         exit()
 
-    train_func = train if dataset == 'CIFAR10'  else simple_train
-    test_func = test if dataset == 'CIFAR10' else simple_test
-    # train_func = simple_train
-    # test_func = simple_test
+    # train_func = train if dataset == 'CIFAR10'  else simple_train
+    # test_func = test if dataset == 'CIFAR10' else simple_test
+    train_func = train
+    test_func = test
     for epoch in range(1, epochs+1): 
         start_time = datetime.datetime.now()
         if not test_only:

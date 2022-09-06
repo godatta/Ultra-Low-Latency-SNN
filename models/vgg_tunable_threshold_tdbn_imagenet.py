@@ -11,15 +11,15 @@ cfg = {
     'VGG9':  [64, 'A', 128, 256, 'A', 256, 512, 'A', 512, 'A', 512],
     'VGG11': [64, 'A', 128, 256, 'A', 512, 512, 'A', 512, 'A', 512, 512],
     'VGG13': [64, 64, 'A', 128, 128, 'A', 256, 256, 'A', 512, 512, 512, 'A', 512],
-    'VGG16': [64, 64, 'A', 128, 128, 'A', 256, 256, 256, 'A', 512, 512, 512, 'A', 512, 512, 512], # 13 conv + 3 fc
+    'VGG16': [64, 64, 'A', 128, 128, 'A', 256, 256, 256, 'A', 512, 512, 512, 'A', 512, 512, 512, 'A'], # 13 conv + 3 fc
     'VGG19': [64, 64, 'A', 128, 128, 'A', 256, 256, 256, 256, 'A', 512, 512, 512, 512, 'A', 512, 512, 512, 512]
 }
 
 
 class VGG_TUNABLE_THRESHOLD_tdbn_imagenet(nn.Module):
     def __init__(self, vgg_name='VGG16', labels=10, dataset = 'CIFAR10', kernel_size=3, linear_dropout=0.1, conv_dropout=0.1, default_threshold=1.0, \
-        net_mode='ori', hoyer_type='mean', act_mode = 'mean', bn_type='bn', start_spike_layer=50, conv_type='ori', pool_pos='after_relu', sub_act_mask=False, \
-        x_thr_scale=1.0, pooling_type='max', weight_quantize=1, im_size=224):
+        net_mode='ori', loss_type='sum', spike_type = 'sum', bn_type='bn', start_spike_layer=50, conv_type='ori', pool_pos='after_relu', sub_act_mask=False, \
+        x_thr_scale=1.0, pooling_type='max', weight_quantize=0, im_size=224):
         super(VGG_TUNABLE_THRESHOLD_tdbn_imagenet, self).__init__()
         
         self.dataset        = dataset
@@ -27,9 +27,9 @@ class VGG_TUNABLE_THRESHOLD_tdbn_imagenet(nn.Module):
         self.bn_type        = bn_type
         self.conv_type      = conv_type
         self.pool_pos       = pool_pos
-        self.act_mode       = act_mode
+        self.loss_type       = loss_type
         self.sub_act_mask   = sub_act_mask
-        self.hoyer_type     = hoyer_type
+        self.spike_type     = spike_type
         self.if_spike       = True if start_spike_layer == 0 else False 
         self.x_thr_scale    = x_thr_scale
         self.weight_quantize= weight_quantize
@@ -52,18 +52,18 @@ class VGG_TUNABLE_THRESHOLD_tdbn_imagenet(nn.Module):
             self.classifier = nn.Sequential(
                             nn.Linear((im_size//32)**2*512, 4096, bias=False),
                             # nn.Linear(512*7*7, 4096, bias=False),
-                            HoyerBiAct(hoyer_type='sum', x_thr_scale=self.x_thr_scale, if_spike=self.if_spike),
+                            HoyerBiAct(spike_type='sum', x_thr_scale=self.x_thr_scale, if_spike=self.if_spike),
                             nn.Linear(4096, 4096, bias=False),
-                            HoyerBiAct(hoyer_type='sum', x_thr_scale=self.x_thr_scale, if_spike=self.if_spike),
+                            HoyerBiAct(spike_type='sum', x_thr_scale=self.x_thr_scale, if_spike=self.if_spike),
                             nn.Linear(4096, labels, bias=False)
             )
         elif dataset=='CIFAR10':
             self.classifier = nn.Sequential(
                             nn.Linear(2048, 4096, bias=False),
-                            HoyerBiAct(hoyer_type='sum', x_thr_scale=self.x_thr_scale, if_spike=self.if_spike),
+                            HoyerBiAct(spike_type='sum', x_thr_scale=self.x_thr_scale, if_spike=self.if_spike),
                             #nn.Dropout(0.5),
                             nn.Linear(4096, 4096, bias=False),
-                            HoyerBiAct(hoyer_type='sum', x_thr_scale=self.x_thr_scale, if_spike=self.if_spike),
+                            HoyerBiAct(spike_type='sum', x_thr_scale=self.x_thr_scale, if_spike=self.if_spike),
                             #nn.Dropout(0.5),
                             nn.Linear(4096, labels, bias=False)
                             )
@@ -74,8 +74,8 @@ class VGG_TUNABLE_THRESHOLD_tdbn_imagenet(nn.Module):
         out_prev = x
         act_out = 0.0
         for l in range(len(self.features)):
+            # print(f'{l} layer, shape: {out_prev.shape}')
             if isinstance(self.features[l], HoyerBiAct):
-                # print(f'{l} layer, shape: {out_prev.shape}')
                 
                 out_prev = self.features[l](out_prev)
                 if torch.sum(torch.abs(out_prev))>0: #  and l < self.start_spike_layer
@@ -86,7 +86,7 @@ class VGG_TUNABLE_THRESHOLD_tdbn_imagenet(nn.Module):
             else:
                 out_prev = self.features[l](out_prev)
 
-        # out_prev = self.avgpool(out_prev) put it before spike
+        # out_prev = self.avgpool(out_prev) # put it before spike
         out_prev = out_prev.view(out_prev.size(0), -1)
 
         for l in range(len(self.classifier)-1):
@@ -104,6 +104,7 @@ class VGG_TUNABLE_THRESHOLD_tdbn_imagenet(nn.Module):
                 out_prev = self.dropout_linear(out_prev)
 
         out = self.classifier[l+1](out_prev)
+        # exit()
         return out, act_out #self.layer_output
 
 
@@ -143,6 +144,8 @@ class VGG_TUNABLE_THRESHOLD_tdbn_imagenet(nn.Module):
 
         in_channels = 3
         # index = 0
+        if self.dataset == 'CIFAR10':
+            cfg.pop()
         for i,x in enumerate(cfg):
             stride = 1
             
@@ -155,27 +158,29 @@ class VGG_TUNABLE_THRESHOLD_tdbn_imagenet(nn.Module):
                     layers += [conv2d,
                             self.pooling,
                             nn.BatchNorm2d(x),
-                            HoyerBiAct(num_features=x, hoyer_type=self.act_mode, x_thr_scale=self.x_thr_scale, if_spike=self.if_spike)
+                            HoyerBiAct(num_features=x, spike_type=self.spike_type, x_thr_scale=self.x_thr_scale, if_spike=self.if_spike)
                             ]
                 else:
                     layers += [conv2d,
                             nn.BatchNorm2d(x),
-                            HoyerBiAct(num_features=x, hoyer_type=self.act_mode, x_thr_scale=self.x_thr_scale, if_spike=self.if_spike),
+                            HoyerBiAct(num_features=x, spike_type=self.spike_type, x_thr_scale=self.x_thr_scale, if_spike=self.if_spike),
                             ]
                 in_channels = x
-        if self.dataset == 'IMAGENET':
-            layers.pop()
-            layers.pop()
+        # if self.dataset == 'IMAGENET':
+        #     layers.pop()
+        #     layers.pop()
 
-            layers += [self.avgpool, 
-                    nn.BatchNorm2d(x),
-                    HoyerBiAct(num_features=x, hoyer_type=self.act_mode, x_thr_scale=self.x_thr_scale, if_spike=self.if_spike)]
+        #     layers += [
+        #             # self.avgpool, 
+        #             self.pooling,
+        #             nn.BatchNorm2d(x),
+        #             HoyerBiAct(num_features=x, spike_type=self.spike_type, x_thr_scale=self.x_thr_scale, if_spike=self.if_spike)]
         return nn.Sequential(*layers)
 
 
 
 def test():
-    net = VGG_TUNABLE_THRESHOLD_tdbn(act_mode='cw', conv_type='ori', start_spike_layer=0).cuda()
+    net = VGG_TUNABLE_THRESHOLD_tdbn(spike_type='cw', conv_type='ori', start_spike_layer=0).cuda()
     seed=0
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
