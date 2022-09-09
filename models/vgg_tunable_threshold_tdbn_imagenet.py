@@ -17,8 +17,8 @@ cfg = {
 
 
 class VGG_TUNABLE_THRESHOLD_tdbn_imagenet(nn.Module):
-    def __init__(self, vgg_name='VGG16', labels=10, dataset = 'CIFAR10', kernel_size=3, linear_dropout=0.1, conv_dropout=0.1, default_threshold=1.0, \
-        net_mode='ori', loss_type='sum', spike_type = 'sum', bn_type='bn', start_spike_layer=50, conv_type='ori', pool_pos='after_relu', sub_act_mask=False, \
+    def __init__(self, vgg_name='VGG16', labels=1000, dataset = 'IMAGENET', kernel_size=3, linear_dropout=0.1, conv_dropout=0.1, default_threshold=1.0, \
+        net_mode='ori', loss_type='sum', spike_type = 'sum', bn_type='bn', start_spike_layer=0, conv_type='ori', pool_pos='after_relu', sub_act_mask=False, \
         x_thr_scale=1.0, pooling_type='max', weight_quantize=0, im_size=224):
         super(VGG_TUNABLE_THRESHOLD_tdbn_imagenet, self).__init__()
         
@@ -76,7 +76,6 @@ class VGG_TUNABLE_THRESHOLD_tdbn_imagenet(nn.Module):
         for l in range(len(self.features)):
             # print(f'{l} layer, shape: {out_prev.shape}')
             if isinstance(self.features[l], HoyerBiAct):
-                
                 out_prev = self.features[l](out_prev)
                 if torch.sum(torch.abs(out_prev))>0: #  and l < self.start_spike_layer
                     # out_copy = out_prev.clone()
@@ -88,14 +87,13 @@ class VGG_TUNABLE_THRESHOLD_tdbn_imagenet(nn.Module):
 
         # out_prev = self.avgpool(out_prev) # put it before spike
         out_prev = out_prev.view(out_prev.size(0), -1)
-
+        # print(f'after view layer, shape: {out_prev.shape}')
         for l in range(len(self.classifier)-1):
-            # print(f'{l} layer, shape: {out_prev.shape}')
             if isinstance(self.classifier[l], nn.Linear):
                 out_prev = self.classifier[l](out_prev) #- getattr(self.threshold, 't'+str(prev+l))*epoch*1e-3
             
             if isinstance(self.classifier[l], HoyerBiAct):
-                
+                # print(f'{l} layer, shape: {out_prev.shape}')
                 out_prev = self.classifier[l](out_prev)  
                 if torch.sum(torch.abs(out_prev))>0: # and prev+l < self.start_spike_layer
                     # out_copy = out_prev.clone()

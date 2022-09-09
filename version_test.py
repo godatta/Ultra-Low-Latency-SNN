@@ -11,6 +11,11 @@
 
 # pip install mmcv-full -f https://download.openmmlab.com/mmcv/dist/cu113/torch1.11.0/index.html
 
+'''
+fuser -v /dev/nvidia*|awk -F " " '{print $0}' >/tmp/pid.file
+while read pid ; do kill -9 $pid; done </tmp/pid.file
+'''
+
 try:
     from apex.parallel import DistributedDataParallel as DDP
     from apex.fp16_utils import *

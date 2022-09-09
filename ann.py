@@ -6,6 +6,7 @@ from models.hoyer_resnet import resnet18, resnet20, resnet34_cifar, resnet34, Re
 from models.self_modules import HoyerBiAct
 from models.vgg_tunable_threshold_tdbn_imagenet import VGG_TUNABLE_THRESHOLD_tdbn_imagenet
 from models.mobilenetv3 import MobileNetV3_Small, MobileNetV3_Large
+from models.vgg_light import VGG16_light
 # from models.resnet_tunable_threshold import *
 import torch
 import torch.nn as nn
@@ -162,8 +163,7 @@ def train(epoch, loader):
     #         param_group['lr'] = param_group['lr'] / lr_reduce
     #         learning_rate = param_group['lr']
     # chech learning rate
-    for param_group in optimizer.param_groups:
-        learning_rate = param_group['lr']
+    # scheduler.step()
     
     #if epoch in lr_interval:
     #else:
@@ -221,21 +221,24 @@ def train(epoch, loader):
             all_layers_act = torch.tensor([0.0, 0.0, 0.0, 0.0])
         # test_hoyer_thr += model.test_hoyer_thr if gpu_nums == 1 else model.module.test_hoyer_thr
         # torch.cuda.empty_cache()
-        if local_rank==0 and ((epoch == 1 and batch_idx < 5) or (dataset == 'IMAGENET' and batch_idx%100==1)):
-            f.write('\nbatch: {}, train_loss: {:.4f}, act_loss: {:.4f}, total_train_loss: {:.4f} '.format(
-            batch_idx,
-            losses.avg,
-            act_losses.avg,
-            total_losses.avg,
-            ))
-            f.write('top1_acc: {:.2f}%, top5_acc: {:.2f}%, output 0: {:.2f}%, relu: {:.2f}%, output threshold: {:.2f}%, time: {}'.format(
-            top1.avg,
-            top5.avg,
-            relu_total_num[0]/relu_total_num[-1]*100,
-            relu_total_num[1]/relu_total_num[-1]*100,
-            relu_total_num[2]/relu_total_num[-1]*100,
-            datetime.timedelta(seconds=(datetime.datetime.now() - start_time).seconds)
-            ))
+        # if local_rank==0 and ((epoch == 1 and batch_idx < 5) or (dataset == 'IMAGENET' and batch_idx%600==1)):
+        #     for param_group in optimizer.param_groups:
+        #         learning_rate = param_group['lr']
+        #     f.write('\nbatch: {}, lr: {}, train_loss: {:.4f}, act_loss: {:.4f}, total_train_loss: {:.4f} '.format(
+        #     batch_idx,
+        #     learning_rate,
+        #     losses.avg,
+        #     act_losses.avg,
+        #     total_losses.avg,
+        #     ))
+        #     f.write('top1_acc: {:.2f}%, top5_acc: {:.2f}%, output 0: {:.2f}%, relu: {:.2f}%, output threshold: {:.2f}%, time: {}'.format(
+        #     top1.avg,
+        #     top5.avg,
+        #     relu_total_num[0]/relu_total_num[-1]*100,
+        #     relu_total_num[1]/relu_total_num[-1]*100,
+        #     relu_total_num[2]/relu_total_num[-1]*100,
+        #     datetime.timedelta(seconds=(datetime.datetime.now() - start_time).seconds)
+        #     ))
         # if batch_idx ==6:
         #     exit()
     # writer.add_scalars('Loss/train', {
@@ -249,6 +252,8 @@ def train(epoch, loader):
     # writer.add_scalar('Relu/between_0_thr', relu_total_num[1]/relu_total_num[-1]*100, epoch)
     # writer.add_scalar('Relu/laeger_eq_thr', relu_total_num[2]/relu_total_num[-1]*100, epoch)
     if local_rank == 0:
+        for param_group in optimizer.param_groups:
+            learning_rate = param_group['lr']
         nameed_params = model.named_parameters() if gpu_nums == 1 else model.module.named_parameters()
         model_thrs = []
         for name, m in nameed_params:
@@ -887,6 +892,7 @@ if __name__ == '__main__':
         labels      = 100 
     elif dataset == 'CIFAR10':
         normalize   = transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
+        #  mean=[125.307, 122.961, 113.8575] std=[51.5865, 50.847, 51.255]
         labels      = 10
     elif dataset == 'MNIST':
         labels = 10
@@ -1023,7 +1029,7 @@ if __name__ == '__main__':
         'weight_quantize': weight_quantize, 'im_size': im_size,
     }
 
-    if architecture[0:3].lower() == 'vgg':
+    if architecture.lower() == 'vgg16':
         # act_type == 'tdbn'
         # model = VGG_TUNABLE_THRESHOLD_tdbn(**params_dict)
         model = VGG_TUNABLE_THRESHOLD_tdbn_imagenet(**params_dict)
@@ -1034,7 +1040,8 @@ if __name__ == '__main__':
         #     weight_quantize=weight_quantize, im_size=im_size)
     # elif architecture[0:3].lower() == 'vgg' and dataset == 'IMAGENET':
     #     model = VGG_TUNABLE_THRESHOLD_tdbn_imagenet(**params_dict)
-
+    elif architecture.lower() == 'vgg16_light':
+        model = VGG16_light(**params_dict)
     elif architecture[0:3].lower() == 'res':
         if architecture.lower() == 'resnet18':
             model = resnet18(**params_dict)
@@ -1066,9 +1073,9 @@ if __name__ == '__main__':
     #model = nn.DataParallel(model)
     if local_rank == 0:
         total_params = sum(p.numel() for p in model.parameters())
-        print(f'{total_params:,} total parameters.')
+        f.write(f'\n{total_params:,} total parameters.')
         total_trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-        print(f'{total_trainable_params:,} training parameters.')
+        f.write(f'\n{total_trainable_params:,} training parameters.')
 
 
     if pretrained_ann:
@@ -1162,23 +1169,24 @@ if __name__ == '__main__':
     if local_rank == 0:
         f.write('\n {}'.format(optimizer))
     if lr_decay == 'step':
-        lr_list = np.arange(1000)
+        warm_up_iter = warmup
         lr_interval_iter = [lr * len(train_loader) for lr in lr_interval]
         def lr_scale(step):
             for i, val in enumerate(lr_interval_iter):
                 if step < val:
                     return i
             return i + 1
-        lambda0 = lambda step : 1.0/(lr_reduce**lr_scale(step))
+        lambda0 = lambda cur_iter : (cur_iter+1) / warm_up_iter if  cur_iter < warm_up_iter else 1.0/(lr_reduce**lr_scale(cur_iter))
     elif lr_decay == 'cos':
         warm_up_iter = warmup
         lambda0 = lambda cur_iter: (cur_iter+1) / warm_up_iter if  cur_iter < warm_up_iter else \
-        (1 + math.cos(math.pi * (cur_iter - warm_up_iter) / (args.T_max - warm_up_iter))) / 2
+        (1 + math.cos(math.pi * (cur_iter - warm_up_iter) / (args.T_max * len(train_loader) - warm_up_iter))) / 2
         # (args.lr_min + 0.5*(args.lr_max-args.lr_min)*(1.0+math.cos( (cur_iter-warm_up_iter)/(args.T_max-warm_up_iter)*math.pi)))/learning_rate
     elif lr_decay == 'linear':
         lambda0 = lambda step : (1.0-step/(args.epochs*len(train_loader)))
     
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda0, last_epoch=-1)
+    # scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda step : (1.0-step/args.epochs), last_epoch=-1)
     if use_apex:
         model, optimizer = amp.initialize(model, optimizer, opt_level='O1')
 

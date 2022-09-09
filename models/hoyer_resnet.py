@@ -157,18 +157,18 @@ class Bottleneck(nn.Module):
                                planes, kernel_size=1, bias=False)
         # self.bn3 = nn.BatchNorm2d(self.expansion*planes)
 
-        self.shortcut = nn.Sequential()
+        self.downsample = nn.Sequential()
         if stride != 1 or inplanes != self.expansion*planes:
-            # self.shortcut = downsample
+            # self.downsample = downsample
             # 1. spike + conv(s=2) + bn
-            # self.shortcut = nn.Sequential(
+            # self.downsample = nn.Sequential(
             #     HoyerBiAct(num_features=inplanes, spike_type=spike_type, x_thr_scale=x_thr_scale),
             #     nn.Conv2d(inplanes, self.expansion*planes,
             #               kernel_size=1, stride=stride, bias=False),
             #     # nn.BatchNorm2d(self.expansion*planes) # 08211953 without this line
             # )
             # 2.  maxpool + bn + spike + conv1x1 
-            self.shortcut = nn.Sequential(
+            self.downsample = nn.Sequential(
                 nn.MaxPool2d(kernel_size=stride, stride=stride),
                 nn.BatchNorm2d(inplanes),
                 HoyerBiAct(num_features=inplanes, spike_type=spike_type, x_thr_scale=x_thr_scale),
@@ -181,9 +181,9 @@ class Bottleneck(nn.Module):
     #     out = self.bn1(self.conv1(self.binary_act1(x)))
     #     out = self.bn2(self.conv2(self.binary_act2(out)))
     #     # out = self.bn3(self.conv3(self.binary_act3(out)))
-    #     # out += self.shortcut(x)
+    #     # out += self.downsample(x)
     #     out = self.conv3(self.binary_act3(out))
-    #     out += self.shortcut(x)
+    #     out += self.downsample(x)
     #     out = self.bn3(out)
     #     return out
     # foward 2.0
@@ -194,7 +194,72 @@ class Bottleneck(nn.Module):
         out = self.conv1(self.act1(self.bn1(x)))
         out = self.conv2(self.act2(self.bn2(out)))
         out = self.conv3(self.act3(self.bn3(out)))
-        out += self.shortcut(x)
+        out += self.downsample(x)
+        return out
+class Bottleneck_v2(nn.Module): # spike->conv
+    expansion = 4
+
+    def __init__(self, inplanes, planes, stride=1, downsample=None, spike_type='sum', x_thr_scale=1.0, if_spike=True):
+        super(Bottleneck_v2, self).__init__()
+        self.act1 = HoyerBiAct(num_features=inplanes, spike_type=spike_type, x_thr_scale=x_thr_scale)
+        self.conv1 = nn.Conv2d(inplanes, planes, kernel_size=1, bias=False) # 64, 64, 1, 1
+        self.bn1 = nn.BatchNorm2d(planes)
+
+        self.act2 = HoyerBiAct(num_features=planes, spike_type=spike_type, x_thr_scale=x_thr_scale)
+        self.conv2 = nn.Conv2d(planes, planes, kernel_size=3,
+                               stride=stride, padding=1, bias=False) # 64, 64, 3, 1
+        self.bn2 = nn.BatchNorm2d(planes)
+
+        self.act3 = HoyerBiAct(num_features=planes, spike_type=spike_type, x_thr_scale=x_thr_scale)
+        self.conv3 = nn.Conv2d(planes, self.expansion *
+                               planes, kernel_size=1, bias=False)
+        self.bn3 = nn.BatchNorm2d(self.expansion*planes)
+
+        self.downsample = nn.Sequential()
+        if stride != 1 or inplanes != self.expansion*planes:
+            # self.downsample = downsample
+            # 1. spike + conv(s=2) + bn
+            # self.downsample = nn.Sequential(
+            #     HoyerBiAct(num_features=inplanes, spike_type=spike_type, x_thr_scale=x_thr_scale),
+            #     nn.Conv2d(inplanes, self.expansion*planes,
+            #               kernel_size=1, stride=stride, bias=False),
+            #     # nn.BatchNorm2d(self.expansion*planes) # 08211953 without this line
+            # )
+            # 2.  maxpool + bn + spike + conv1x1 
+            # self.downsample = nn.Sequential(
+            #     nn.MaxPool2d(kernel_size=stride, stride=stride),
+            #     nn.BatchNorm2d(inplanes),
+            #     HoyerBiAct(num_features=inplanes, spike_type=spike_type, x_thr_scale=x_thr_scale),
+            #     conv1x1(inplanes, planes * self.expansion),
+            # )
+            # 3.0 maxpooling->spike->conv->bn
+            self.downsample = nn.Sequential(
+                nn.MaxPool2d(kernel_size=stride, stride=stride),
+                HoyerBiAct(num_features=inplanes, spike_type=spike_type, x_thr_scale=x_thr_scale),
+                conv1x1(inplanes, planes * self.expansion),
+                nn.BatchNorm2d(planes * self.expansion),
+            )
+
+
+    # def forward(self, x):
+    #     # print(f'x.shape: {x.shape}')
+    #     out = self.bn1(self.conv1(self.binary_act1(x)))
+    #     out = self.bn2(self.conv2(self.binary_act2(out)))
+    #     # out = self.bn3(self.conv3(self.binary_act3(out)))
+    #     # out += self.downsample(x)
+    #     out = self.conv3(self.binary_act3(out))
+    #     out += self.downsample(x)
+    #     out = self.bn3(out)
+    #     return out
+    # foward 2.0
+    def forward(self, x):
+        # print(f'x.shape: {x.shape}')
+        # x = self.bn1(x)
+        # out = self.conv1(self.binary_act1(x))
+        out = self.bn1(self.conv1(self.act1(x)))
+        out = self.bn2(self.conv2(self.act2(out)))
+        out = self.bn3(self.conv3(self.act3(out)))
+        out += self.downsample(x)
         return out
 
 class HoyerResNet(nn.Module):
@@ -230,13 +295,13 @@ class HoyerResNet(nn.Module):
                                 bias=False)
         else:
             raise RuntimeError('only for ciafar10 and imagenet now')
-        # self.bn1 = nn.BatchNorm2d(64)
+        self.bn1 = nn.BatchNorm2d(64)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
         self.layer1 = self._make_layer(block, 64, num_blocks[0])
         self.layer2 = self._make_layer(block, 128, num_blocks[1], stride=2)
         self.layer3 = self._make_layer(block, 256, num_blocks[2], stride=2)
         self.layer4 = self._make_layer(block, 512, num_blocks[3], stride=2)
-        self.bn1     = nn.BatchNorm2d(last_bn_c)
+        # self.bn1     = nn.BatchNorm2d(last_bn_c)
         self.fc_act = HoyerBiAct(spike_type='sum', x_thr_scale=self.x_thr_scale, if_spike=self.if_spike)
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         self.fc = nn.Linear(512 * block.expansion, labels)
@@ -294,7 +359,7 @@ class HoyerResNet(nn.Module):
         act_out = 0.0
         x = self.conv1(x)
         x = self.maxpool(x)
-        # x = self.bn1(x) # do not need for 2.0
+        x = self.bn1(x) #  for 1.0
         act_out += self.hoyer_loss(x.clone())
 
         for i,layers in enumerate([self.layer1, self.layer2, self.layer3, self.layer4]):
@@ -304,7 +369,7 @@ class HoyerResNet(nn.Module):
                 act_out += self.hoyer_loss(x.clone())
             # x = layers(x)
             # act_out += self.hoyer_loss(x.clone())
-        x = self.bn1(x) # for 2.0
+        # x = self.bn1(x) # for 2.0
         x = self.avgpool(x)
         x = x.view(x.size(0), -1)
         # act_out += self.hoyer_loss(x.clone())
