@@ -7,6 +7,7 @@ from models.self_modules import HoyerBiAct
 from models.vgg_tunable_threshold_tdbn_imagenet import VGG_TUNABLE_THRESHOLD_tdbn_imagenet
 from models.mobilenetv3 import MobileNetV3_Small, MobileNetV3_Large
 from models.vgg_light import VGG16_light
+from models.vgg_relu import VGG16_ReLU
 # from models.resnet_tunable_threshold import *
 import torch
 import torch.nn as nn
@@ -274,7 +275,10 @@ def train(epoch, loader):
             wandb.log({'Relu_less_eq_0': relu_total_num[0]/relu_total_num[-1]*100}, step=epoch)
             wandb.log({'Relu_between_0_thr': relu_total_num[1]/relu_total_num[-1]*100}, step=epoch)
             wandb.log({'Relu_laeger_eq_thr': relu_total_num[2]/relu_total_num[-1]*100}, step=epoch)
-        f.write('\n The threshold in ann is: {}'.format([round(p, 4) for p in model_thr]))
+        try:
+            f.write('\n The threshold in ann is: {}'.format([round(p, 4) for p in model_thr]))
+        except:
+            pass
         f.write('\nEpoch: {}, lr: {:.1e}, train_loss: {:.4f}, act_loss: {:.4f}, total_train_loss: {:.4f} '.format(
                 epoch,
                 learning_rate,
@@ -940,8 +944,11 @@ if __name__ == '__main__':
     elif dataset == 'IMAGENET':
         # traindir    = os.path.join('/m2/data/imagenet', 'train')
         # valdir      = os.path.join('/m2/data/imagenet', 'val')
-        traindir    = os.path.join('/home/ubuntu/data/imagenet', 'train')
-        valdir      = os.path.join('/home/ubuntu/data/imagenet', 'val')
+        # /nas/vista-ssd01/batl/public_datasets/ImageNet
+        # traindir    = os.path.join('/home/ubuntu/data/imagenet', 'train')
+        # valdir      = os.path.join('/home/ubuntu/data/imagenet', 'val')
+        traindir    = os.path.join('/nas/vista-ssd01/batl/public_datasets/ImageNet', 'train')
+        valdir      = os.path.join('/nas/vista-ssd01/batl/public_datasets/ImageNet', 'val')
         if im_size == None:
             im_size = 224
             train_dataset    = datasets.ImageFolder(
@@ -1042,6 +1049,8 @@ if __name__ == '__main__':
     #     model = VGG_TUNABLE_THRESHOLD_tdbn_imagenet(**params_dict)
     elif architecture.lower() == 'vgg16_light':
         model = VGG16_light(**params_dict)
+    elif architecture.lower() == 'vgg16_relu':
+        model = VGG16_ReLU(**params_dict)
     elif architecture[0:3].lower() == 'res':
         if architecture.lower() == 'resnet18':
             model = resnet18(**params_dict)
@@ -1094,7 +1103,9 @@ if __name__ == '__main__':
         # for key in state['state_dict']:
         #     state_copy[key[7:]] = state['state_dict'][key]
         # missing_keys, unexpected_keys = model.load_state_dict(state_copy, strict=False)
-        missing_keys, unexpected_keys = model.load_state_dict(state['state_dict'], strict=False)
+        if pretrained_ann[-3:] == 'pth':
+            state = state['state_dict']
+        missing_keys, unexpected_keys = model.load_state_dict(state, strict=False)
         f.write('\n Missing keys : {}\n Unexpected Keys: {}'.format(missing_keys, unexpected_keys))        
         # f.write('\n Info: Accuracy of loaded ANN model: {}'.format(state['accuracy']))
         # f.write('\n The threshold in ann is: {}'.format([model.threshold[key].data for key in model.threshold]))
@@ -1132,7 +1143,7 @@ if __name__ == '__main__':
     # use hook to check the dist of the output
     if use_hook:
         for name, module in model.named_modules():
-            if isinstance(module, HoyerBiAct):
+            if isinstance(module, (HoyerBiAct, nn.ReLU)):
                 # print('module name: {}'.format(name))
                 module.register_forward_hook(hook_fn_forward)
 

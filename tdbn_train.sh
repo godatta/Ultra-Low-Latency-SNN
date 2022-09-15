@@ -1,11 +1,12 @@
 # 1.
-# python ann.py --dataset IMAGENET --batch_size 1 --im_size 56 --architecture VGG16_light \
-# --learning_rate 1e-4 --epochs 400 --lr_interval '0.60 0.80 0.90' --lr_reduce 5 --relu_threshold 1.0 \
-# --optimizer Adam --weight_decay 0.0001 --momentum 0.9 --amsgrad True --devices 2 --seed 0 --linear_dropout 0.1 --conv_dropout 0.1 \
-# --hoyer_decay 1e-8 --net_mode 'ori' --pool_pos 'before_relu'  --use_hook  --reg_thr \
-# --spike_type 'sum' --bn_type 'bn' --loss_type 'sum' --start_spike_layer 0 --x_thr_scale 1.0 --weight_quantize 0 \
-# --description 'resnet18 spike->conv->bn and bn last, test' --warmup 100 --lr_decay 'step'
-# --pretrained_ann 'trained_models_ann/ann_vgg16_cifar10_202206241620.pth' --use_wandb --log
+python ann.py --dataset CIFAR10 --batch_size 128 --im_size 32 --architecture VGG16_light \
+--learning_rate 1e-4 --epochs 400 --lr_interval '0.60 0.80 0.90' --lr_reduce 5 --relu_threshold 1.0 \
+--optimizer Adam --weight_decay 0.0001 --momentum 0.9 --amsgrad True --devices 0 --seed 0 --linear_dropout 0.1 --conv_dropout 0.1 \
+--hoyer_decay 1e-8 --net_mode 'ori' --pool_pos 'before_relu'  --use_hook  --use_wandb --log \
+--spike_type 'sum' --bn_type 'bn' --loss_type 'sum' --start_spike_layer 0 --x_thr_scale 1.0 --weight_quantize 0 \
+--description 'test vgg16 with reg_thr, sum thr, without hoyer_reg, grad=1.0' --warmup 0 --lr_decay 'step' \
+# --pretrained_ann '/nas/home/zeyul/mmdetection/checkpoints/best.pt'
+#  --use_wandb --log
 
 # 1. RESNET20 + CIFAR10
 # torchrun --nproc_per_node=8 --master_port 29518 ann.py --dataset CIFAR10 --batch_size 128 --im_size 32 --architecture VGG16_light \
@@ -15,12 +16,12 @@
 # --spike_type 'sum' --bn_type 'bn' --loss_type 'sum' --start_spike_layer 0 --x_thr_scale 1.0 --weight_quantize 0 \
 # --description 'model test' --warmup 10 --lr_decay 'step'
 
-torchrun --nproc_per_node=8 --master_port 29516 ann.py --dataset IMAGENET --batch_size 32 --im_size 224 --architecture VGG16 \
---learning_rate 5e-4 --epochs 180 --lr_interval '0.50 0.75 0.85' --lr_reduce 5 --relu_threshold 1.0 \
---optimizer Adam --weight_decay 5e-6 --momentum 0.9 --amsgrad True --devices 0,1,2,3,4,5,6,7 --seed 0 --linear_dropout 0.1 --conv_dropout 0.1 \
---hoyer_decay 1e-8 --net_mode 'ori' --pool_pos 'before_relu'  --use_hook --log --use_wandb --reg_thr \
---spike_type 'cw' --bn_type 'bn' --loss_type 'sum' --start_spike_layer 0 --x_thr_scale 1.0 --weight_quantize 0 --warmup 1000 --lr_decay 'step' \
---description 'calculate loss after spike, with reg_thr, with dropout for conv, default init'
+# torchrun --nproc_per_node=8 --master_port 29516 ann.py --dataset IMAGENET --batch_size 32 --im_size 224 --architecture VGG16 \
+# --learning_rate 5e-4 --epochs 180 --lr_interval '0.50 0.75 0.85' --lr_reduce 5 --relu_threshold 1.0 \
+# --optimizer Adam --weight_decay 5e-6 --momentum 0.9 --amsgrad True --devices 0,1,2,3,4,5,6,7 --seed 0 --linear_dropout 0.1 --conv_dropout 0.1 \
+# --hoyer_decay 1e-8 --net_mode 'ori' --pool_pos 'before_relu'  --use_hook --log --use_wandb --reg_thr \
+# --spike_type 'cw' --bn_type 'bn' --loss_type 'sum' --start_spike_layer 0 --x_thr_scale 1.0 --weight_quantize 0 --warmup 1000 --lr_decay 'step' \
+# --description 'calculate loss after spike, with reg_thr, with dropout for conv, default init'
 # --description 'bottle: bn->spike->conv, downsample: bn->spike->conv, bn(2048)' 
 #--description 'bottle: spke->conv->bn, downsample: spike->conv->bn, bn(64)' 
 # --description 'bottle: nb->spke->conv, downsample: bn->spike->conv, bn(2048)' 

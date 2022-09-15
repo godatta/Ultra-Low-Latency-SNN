@@ -298,7 +298,7 @@ class Spike_func(torch.autograd.Function):
         grad_inp[input > 2.0] = 0.0
 
         # grad_scale = 0.5 if ctx.if_spike else 1.0
-        grad_scale = 0.5
+        grad_scale = 1.0
     
 
         return grad_scale*grad_inp*grad_input, None, None, None, None

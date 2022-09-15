@@ -295,13 +295,13 @@ class HoyerResNet(nn.Module):
                                 bias=False)
         else:
             raise RuntimeError('only for ciafar10 and imagenet now')
-        self.bn1 = nn.BatchNorm2d(64)
+        # self.bn1 = nn.BatchNorm2d(64)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
         self.layer1 = self._make_layer(block, 64, num_blocks[0])
         self.layer2 = self._make_layer(block, 128, num_blocks[1], stride=2)
         self.layer3 = self._make_layer(block, 256, num_blocks[2], stride=2)
         self.layer4 = self._make_layer(block, 512, num_blocks[3], stride=2)
-        # self.bn1     = nn.BatchNorm2d(last_bn_c)
+        self.bn1     = nn.BatchNorm2d(last_bn_c)
         self.fc_act = HoyerBiAct(spike_type='sum', x_thr_scale=self.x_thr_scale, if_spike=self.if_spike)
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         self.fc = nn.Linear(512 * block.expansion, labels)
@@ -359,7 +359,7 @@ class HoyerResNet(nn.Module):
         act_out = 0.0
         x = self.conv1(x)
         x = self.maxpool(x)
-        x = self.bn1(x) #  for 1.0
+        # x = self.bn1(x) #  for 1.0
         act_out += self.hoyer_loss(x.clone())
 
         for i,layers in enumerate([self.layer1, self.layer2, self.layer3, self.layer4]):
@@ -369,7 +369,7 @@ class HoyerResNet(nn.Module):
                 act_out += self.hoyer_loss(x.clone())
             # x = layers(x)
             # act_out += self.hoyer_loss(x.clone())
-        # x = self.bn1(x) # for 2.0
+        x = self.bn1(x) # for 2.0
         x = self.avgpool(x)
         x = x.view(x.size(0), -1)
         # act_out += self.hoyer_loss(x.clone())

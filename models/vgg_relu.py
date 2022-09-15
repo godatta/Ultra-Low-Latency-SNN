@@ -1,3 +1,4 @@
+'''VGG11/13/16/19 in Pytorch.'''
 import torch
 import torch.nn as nn
 import math
@@ -12,35 +13,35 @@ cfg = {
 }
 
 
-class VGG16_light(nn.Module):
-    def __init__(self, vgg_name='VGG16', labels=1000, dataset = 'IMAGENET', kernel_size=3, linear_dropout=0.1, conv_dropout=0.1, default_threshold=1.0, \
-        net_mode='ori', loss_type='sum', spike_type = 'sum', bn_type='bn', start_spike_layer=0, conv_type='ori', pool_pos='after_relu', sub_act_mask=False, \
+class VGG16_ReLU(nn.Module):
+    def __init__(self, vgg_name='VGG16', labels=10, dataset = 'CIFAR10', kernel_size=3, linear_dropout=0.1, conv_dropout=0.1, default_threshold=1.0, \
+        net_mode='ori', loss_type='sum', spike_type = 'sum', bn_type='bn', start_spike_layer=50, conv_type='ori', pool_pos='after_relu', sub_act_mask=False, \
         x_thr_scale=1.0, pooling_type='max', weight_quantize=0, im_size=224):
-        super(VGG16_light, self).__init__()
+        super(VGG16_ReLU, self).__init__()
         self.dataset = dataset
         self.spike_type = spike_type
         self.x_thr_scale = x_thr_scale
         self.if_spike = True
         self.conv_dropout = conv_dropout
         self.features = self._make_layers(cfg[vgg_name])
-        fc_spike_type = 'fixed' if spike_type == 'fixed' else 'sum'
+        self.classifier = nn.Linear(512, 10)
         if dataset=='IMAGENET':
             self.classifier = nn.Sequential(
                             nn.Linear((im_size//32)**2*512, 4096, bias=False),
-                            HoyerBiAct(spike_type=fc_spike_type, x_thr_scale=self.x_thr_scale, if_spike=self.if_spike),
+                            nn.ReLU(True),
                             nn.Dropout(linear_dropout),
                             nn.Linear(4096, 4096, bias=False),
-                            HoyerBiAct(spike_type=fc_spike_type, x_thr_scale=self.x_thr_scale, if_spike=self.if_spike),
+                            nn.ReLU(True),
                             nn.Dropout(linear_dropout),
                             nn.Linear(4096, labels, bias=False)
             )
-        elif dataset=='CIFAR10':
+        if dataset=='CIFAR10':
             self.classifier = nn.Sequential(
                             nn.Linear(2048, 4096, bias=False),
-                            HoyerBiAct(spike_type=fc_spike_type, x_thr_scale=self.x_thr_scale, if_spike=self.if_spike),
+                            nn.ReLU(True),
                             nn.Dropout(linear_dropout),
                             nn.Linear(4096, 4096, bias=False),
-                            HoyerBiAct(spike_type=fc_spike_type, x_thr_scale=self.x_thr_scale, if_spike=self.if_spike),
+                            nn.ReLU(True),
                             nn.Dropout(linear_dropout),
                             nn.Linear(4096, labels, bias=False))
         # self._initialize_weights2()
@@ -64,7 +65,7 @@ class VGG16_light(nn.Module):
         out = x
         for l in self.features:
             out = l(out)
-            if isinstance(l, HoyerBiAct):
+            if isinstance(l, nn.ReLU):
                 act_loss += self.hoyer_loss(out.clone())
             
         
@@ -72,7 +73,7 @@ class VGG16_light(nn.Module):
         
         for i,l in enumerate(self.classifier):
             out = l(out)
-            if isinstance(l, HoyerBiAct):
+            if isinstance(l, nn.ReLU):
                 act_loss += self.hoyer_loss(out.clone())
             
         return out, act_loss
@@ -93,13 +94,13 @@ class VGG16_light(nn.Module):
                         conv,
                         nn.MaxPool2d(kernel_size=2, stride=2),
                         nn.BatchNorm2d(x),
-                        HoyerBiAct(num_features=x, spike_type=self.spike_type, x_thr_scale=self.x_thr_scale, if_spike=self.if_spike),
+                        nn.ReLU(True),
                         nn.Dropout(self.conv_dropout)]
             else:
                 layers += [
                         conv,
                         nn.BatchNorm2d(x),
-                        HoyerBiAct(num_features=x, spike_type=self.spike_type, x_thr_scale=self.x_thr_scale, if_spike=self.if_spike),
+                        nn.ReLU(True),
                         nn.Dropout(self.conv_dropout)]
             in_channels = x
         return nn.Sequential(*layers)
