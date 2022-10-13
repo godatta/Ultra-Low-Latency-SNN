@@ -1,6 +1,6 @@
 import torch
-import numpy as np
-import matplotlib.pyplot as plt
+# import numpy as np
+# import matplotlib.pyplot as plt
 
 # output_file = 'network_output/snn_vgg16_cifar10_1_202205221408_test'
 # output = torch.load(output_file)
@@ -22,7 +22,7 @@ import matplotlib.pyplot as plt
 #     new_mean = torch.sum(out) / len(out[out>=hoyer])
 #     print('{} layer mean: {:.4f}, hoyer: {:.4f}, hoyer_mean: {:.4f}, new_mean:{:.4f}'.format(k, num_mean, hoyer, hoyer_mean, new_mean))
 
-output_file = 'network_output/ann_vgg16_cifar10_202206250007_test_v2'
+output_file = 'network_output/ann_vgg16_relu_cifar10_202209212335_test'
 output = torch.load(output_file)
 for k in output.keys():
     print('k: {}, shape: {}'.format(k, output[k].shape))

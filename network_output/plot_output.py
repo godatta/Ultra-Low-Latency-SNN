@@ -7,7 +7,9 @@ import os
 import pickle
 import seaborn as sns
 
-output_file = 'network_output/ann_vgg16_cifar10_202207032300_test'
+output_file = 'network_output/ann_vgg16_cifar10_202207062203_test'
+# 'network_output/ann_vgg16_relu_cifar10_202209122042_test'
+# 'network_output/ann_vgg16_relu_cifar10_202209121539_test'
 # 'network_output/ann_vgg16_cifar10_202206091914_test'
 # 'network_output/ann_vgg16_cifar10_202205182136_test'
 # 'network_output/snn_vgg16_cifar10_1_202205221408_test'
@@ -16,11 +18,41 @@ output_file = 'network_output/ann_vgg16_cifar10_202207032300_test'
 
 
 # model = torch.load(os.path.join('trained_models_ann', output_file.split('/')[-1][:-5])+'.pth')
+def subplot():
+    
+    output = torch.load(output_file)
+    plt.figure(figsize=(32,32))
+    min = max = 0.0
+    count = 0
+    for i,k in enumerate(output.keys()):
+        if k not in [1,10,11,12]:
+            continue
+        count += 1
+        print('k: {}, type: {}, shape: {}'.format(k,type(k), output[k].shape))
+        plt.subplot(2,2,count)
+        nums = np.asarray(output[k])
+        nums_max = np.max(nums)
+        
+        if k in [1,10,11,12]:
+            total = nums.shape[0]
+            layer_min = (nums<=0).sum() / total * 100.0
+            layer_max = (nums>=nums_max).sum()  / total * 100.0
+            min += layer_min
+            max += layer_max
+        
+            plt.hist(output[k], bins=128)
+
+            # plt.legend()
+            plt.yscale('log')
+    plt.savefig(output_file[:-4] + '_sub.jpg')
+    # torch.save(mid_hoyers, 'network_output/my_x_scale_factor_1753')
+
 def plot(mode = 'ann'):
     threshold = {}
     update_thr = {}
     if mode == 'ann':
-        model = torch.load(os.path.join('trained_models_ann', output_file.split('/')[-1][:-5])+'.pth', map_location='cpu')
+        pass
+        # model = torch.load(os.path.join('trained_models_ann', output_file.split('/')[-1][:-5])+'.pth', map_location='cpu')
         # with open('new_factor_scale/new_factor_x_vgg16_cifar10_1','rb') as f:
         #     scale_factor = pickle.load(f)
     else:
@@ -30,9 +62,9 @@ def plot(mode = 'ann'):
         with open('output/ann_max_vgg16_cifar10_0.9', 'rb') as f:
             max_thr_scale = torch.load(f, map_location='cpu')
 
-    for key in model['state_dict'].keys():
-        if key[:9] == 'threshold':
-            threshold[key[11:]] = model['state_dict'][key].cpu()
+    # for key in model['state_dict'].keys():
+    #     if key[:9] == 'threshold':
+    #         threshold[key[11:]] = model['state_dict'][key].cpu()
     if mode == 'snn':
         for i,key in enumerate(sorted(threshold.keys(), key=lambda k: int(k))):
             update_thr[key] = threshold[key]*scale_factor[i]
@@ -44,16 +76,17 @@ def plot(mode = 'ann'):
     mid_hoyers = []
     for i,k in enumerate(output.keys()):
         print('k: {}, shape: {}'.format(k, output[k].shape))
-        plt.subplot(4,4,i+1)
+        plt.subplot(5,5,i+1)
         nums = np.asarray(output[k])
-        nums_batch = nums.reshape(128,-1)
-        hoyer_line = np.sum(nums_batch**2) / np.sum(np.abs(nums_batch)) if np.sum(np.abs(nums_batch)) > 0 else 0.0
+        # nums_batch = nums.reshape(128,-1)
+        # hoyer_line = np.sum(nums_batch**2) / np.sum(np.abs(nums_batch)) if np.sum(np.abs(nums_batch)) > 0 else 0.0
         # (np.linalg.norm(nums,2)**2/np.linalg.norm(nums,1))
         
-        hoyer_sum = np.mean(np.sum(nums_batch**2, axis=1) / np.sum(np.abs(nums_batch), axis=1)) if np.sum(np.abs(nums_batch)) > 0 else 0.0
+        # hoyer_sum = np.mean(np.sum(nums_batch**2, axis=1) / np.sum(np.abs(nums_batch), axis=1)) if np.sum(np.abs(nums_batch)) > 0 else 0.0
         nums_max = np.max(nums)
         
         if k != 'total':
+        # if k in [1,10,11,12]:
             total = nums.shape[0]
             layer_min = (nums<=0).sum() / total * 100.0
             layer_max = (nums>=nums_max).sum()  / total * 100.0
@@ -67,8 +100,8 @@ def plot(mode = 'ann'):
             plt.vlines(nums_max, 0, 10e4, linestyles='dashed', color='b', label='threshold')
             # plt.vlines(threshold[str(k)].item() * scale_factor[i], 0, 10e4, linestyles='dashed', color='g', label='updated_threshold')
             # plt.vlines(threshold[str(k)].item(), 0, 1e4, linestyles='dashed', color='b', label='threshold')
-            plt.vlines(hoyer_line, 0, 10e4, linestyles='dashed',color='r', label='hoyer_line')
-            plt.vlines(hoyer_sum, 0, 10e5, linestyles='dotted',color='g', label='hoyer_line_sum')
+            # plt.vlines(hoyer_line, 0, 10e4, linestyles='dashed',color='r', label='hoyer_line')
+            # plt.vlines(hoyer_sum, 0, 10e5, linestyles='dotted',color='g', label='hoyer_line_sum')
 
             mid_num = nums[nums>0.0]
             mid_num = mid_num[mid_num<nums_max]
@@ -82,13 +115,13 @@ def plot(mode = 'ann'):
             # plt.vlines(min_scale, 0, 10e6, linestyles='dashed', label='min_scale')
             # plt.vlines(max_scale, 0, 10e6, linestyles='dotted', label='max_scale')
             plt.vlines(mid_hoyer, 0, 10e7, linestyles='dotted', label='mid_hoyer')
-        else:
-            min /= (len(output.keys())-1)
-            max /= (len(output.keys())-1)
-            plt.hist(output[k], label='{}: 0: {:.2f}%, (0,thr): {:.2f}%, thr: {:.2f}%'.format(k, min, 100-min-max, max), bins=100)
+        # else:
+        #     min /= (len(output.keys())-1)
+        #     max /= (len(output.keys())-1)
+        #     plt.hist(output[k], label='{}: 0: {:.2f}%, (0,thr): {:.2f}%, thr: {:.2f}%'.format(k, min, 100-min-max, max), bins=100)
         plt.legend()
         plt.yscale('log')
-    plt.savefig(output_file[:-4] + '.jpg')
+    plt.savefig(output_file[:-4] + '_sub.jpg')
     # torch.save(mid_hoyers, 'network_output/my_x_scale_factor_1753')
 
 def plot_heatmap():  
@@ -125,5 +158,6 @@ def plot_heatmap():
 
 if __name__ == '__main__':
     # plot_heatmap()
+    # subplot()
     plot()
     # plot('snn')

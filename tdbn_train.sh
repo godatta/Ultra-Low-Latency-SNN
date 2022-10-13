@@ -1,12 +1,20 @@
 # 1.
-python ann.py --dataset CIFAR10 --batch_size 128 --im_size 32 --architecture VGG16_light \
---learning_rate 1e-4 --epochs 400 --lr_interval '0.60 0.80 0.90' --lr_reduce 5 --relu_threshold 1.0 \
---optimizer Adam --weight_decay 0.0001 --momentum 0.9 --amsgrad True --devices 0 --seed 0 --linear_dropout 0.1 --conv_dropout 0.1 \
---hoyer_decay 1e-8 --net_mode 'ori' --pool_pos 'before_relu'  --use_hook  --use_wandb --log \
---spike_type 'sum' --bn_type 'bn' --loss_type 'sum' --start_spike_layer 0 --x_thr_scale 1.0 --weight_quantize 0 \
---description 'test vgg16 with reg_thr, sum thr, without hoyer_reg, grad=1.0' --warmup 0 --lr_decay 'step' \
-# --pretrained_ann '/nas/home/zeyul/mmdetection/checkpoints/best.pt'
+# python ann.py --dataset CIFAR10 --batch_size 128 --im_size 32 --architecture VGG16_light \
+# --learning_rate 4e-3 --epochs 600 --lr_interval '0.60 0.80 0.90' --lr_reduce 5 --relu_threshold 1.0 \
+# --optimizer SGD --weight_decay 0.0001 --momentum 0.9 --amsgrad True --devices 0 --seed 0 --linear_dropout 0.1 --conv_dropout 0.1 \
+# --hoyer_decay 1e-8 --net_mode 'ori' --pool_pos 'before_relu'  --use_hook --log \
+# --spike_type 'cw' --bn_type 'bn' --loss_type 'sum' --start_spike_layer 0 --x_thr_scale 1.0 --weight_quantize 0 \
+# --description ' vgg16 without reg_thr, channel=64' --warmup 0 --lr_decay 'step' \
+# --pretrained_ann 'trained_models_ann/ann_vgg16_relu_cifar10_202209121539.pth' 
+# --pretrained_ann 'trained_models_ann/ann_vgg16_light_cifar10_202209240049.pth'
 #  --use_wandb --log
+
+python ann.py --dataset CIFAR10 --batch_size 128 --im_size 32 --architecture resnet20 \
+--learning_rate 1e-1 --epochs 600 --lr_interval '0.60 0.80 0.90' --lr_reduce 5 --relu_threshold 1.0 \
+--optimizer SGD --weight_decay 0.0001 --momentum 0.9 --amsgrad True --devices 0 --seed 0 --linear_dropout 0 --conv_dropout 0 \
+--hoyer_decay 1e-8 --net_mode 'ori' --pool_pos 'before_relu'  --use_hook --log \
+--spike_type 'cw' --bn_type 'bn' --loss_type 'sum' --start_spike_layer 0 --x_thr_scale 1.0 --weight_quantize 0 \
+--description 'test resnet20 with reg_thr, [>1]!=0' --warmup 0 --lr_decay 'step' --reg_thr 
 
 # 1. RESNET20 + CIFAR10
 # torchrun --nproc_per_node=8 --master_port 29518 ann.py --dataset CIFAR10 --batch_size 128 --im_size 32 --architecture VGG16_light \

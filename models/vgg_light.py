@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import math
 from models.self_modules import HoyerBiAct
+from models.cus_conv import customConv2
 
 
 cfg = {
@@ -23,6 +24,7 @@ class VGG16_light(nn.Module):
         self.if_spike = True
         self.conv_dropout = conv_dropout
         self.features = self._make_layers(cfg[vgg_name])
+        self.loss_type = loss_type
         fc_spike_type = 'fixed' if spike_type == 'fixed' else 'sum'
         if dataset=='IMAGENET':
             self.classifier = nn.Sequential(
@@ -47,17 +49,19 @@ class VGG16_light(nn.Module):
                             
     def hoyer_loss(self, x):
         # return torch.sum(x)
+        x[x<0.0] = 0
+        # x[x>thr] = 0
         if torch.sum(torch.abs(x))>0: #  and l < self.start_spike_layer
-            return  (torch.sum(torch.abs(x))**2 / torch.sum((x)**2))
-            # if self.loss_type == 'mean':
-            #     return torch.mean(torch.sum(torch.abs(x), dim=(1,2,3))**2 / torch.sum((x)**2, dim=(1,2,3)))
-            # elif self.loss_type == 'sum':
-            #     return  (torch.sum(torch.abs(x))**2 / torch.sum((x)**2))
-            # elif self.loss_type == 'cw':
-            #     hoyer_thr = torch.sum((x)**2, dim=(0,2,3)) / torch.sum(torch.abs(x), dim=(0,2,3))
-            #     # 1.0 is the max thr
-            #     hoyer_thr = torch.nan_to_num(hoyer_thr, nan=1.0)
-            #     return torch.mean(hoyer_thr)
+            # return  (torch.sum(torch.abs(x))**2 / torch.sum((x)**2))
+            if self.loss_type == 'mean':
+                return torch.mean(torch.sum(torch.abs(x), dim=(1,2,3))**2 / torch.sum((x)**2, dim=(1,2,3)))
+            elif self.loss_type == 'sum':
+                return  (torch.sum(torch.abs(x))**2 / torch.sum((x)**2))
+            elif self.loss_type == 'cw':
+                hoyer_thr = torch.sum((x)**2, dim=(0,2,3)) / torch.sum(torch.abs(x), dim=(0,2,3))
+                # 1.0 is the max thr
+                hoyer_thr = torch.nan_to_num(hoyer_thr, nan=1.0)
+                return torch.mean(hoyer_thr)
         return 0.0
     def forward(self, x):
         act_loss = 0.0
@@ -66,7 +70,7 @@ class VGG16_light(nn.Module):
             out = l(out)
             if isinstance(l, HoyerBiAct):
                 act_loss += self.hoyer_loss(out.clone())
-            
+            # out = l(out)
         
         out = out.view(out.size(0), -1)
         
@@ -74,7 +78,8 @@ class VGG16_light(nn.Module):
             out = l(out)
             if isinstance(l, HoyerBiAct):
                 act_loss += self.hoyer_loss(out.clone())
-            
+            # out = l(out)
+ 
         return out, act_loss
 
     def _make_layers(self, cfg):
@@ -86,7 +91,13 @@ class VGG16_light(nn.Module):
             
             if x == 'M':
                 continue
-            conv = nn.Conv2d(in_channels, x, kernel_size=3, padding=1, stride=1, bias=False)
+            if i == 0:
+                x=64
+                conv = nn.Conv2d(in_channels, x, kernel_size=3, padding=1, stride=1, bias=False)
+                # conv = customConv2(in_channels=3, out_channels=x, kernel_size=(3 ,3), stride = 1, padding = 1)
+                # conv = customConv2(in_channels=3, out_channels=16, kernel_size=(7, 7), stride = 6, padding = 1)
+            else:
+                conv = nn.Conv2d(in_channels, x, kernel_size=3, padding=1, stride=1, bias=False)
 
             if i+1 < len(cfg) and cfg[i+1] == 'M':
                 layers += [
@@ -95,6 +106,12 @@ class VGG16_light(nn.Module):
                         nn.BatchNorm2d(x),
                         HoyerBiAct(num_features=x, spike_type=self.spike_type, x_thr_scale=self.x_thr_scale, if_spike=self.if_spike),
                         nn.Dropout(self.conv_dropout)]
+                # layers += [
+                #         conv,
+                #         nn.BatchNorm2d(x),
+                #         HoyerBiAct(num_features=x, spike_type=self.spike_type, x_thr_scale=self.x_thr_scale, if_spike=self.if_spike),
+                #         nn.Dropout(self.conv_dropout),
+                #         nn.MaxPool2d(kernel_size=2, stride=2)]
             else:
                 layers += [
                         conv,

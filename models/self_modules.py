@@ -68,6 +68,7 @@ class HoyerBiAct(nn.Module):
         # input = torch.clamp(input, min=0.0, max=1.0)
         if self.training:
             clamped_input = torch.clamp((input).clone().detach(), min=0.0, max=1.0)
+            # clamped_input[clamped_input >= 1.0] = 0.0
             # clamped_input = input.clone().detach()
             if self.spike_type == 'sum':
                 hoyer_thr = torch.sum((clamped_input)**2) / torch.sum(torch.abs(clamped_input))
@@ -298,7 +299,7 @@ class Spike_func(torch.autograd.Function):
         grad_inp[input > 2.0] = 0.0
 
         # grad_scale = 0.5 if ctx.if_spike else 1.0
-        grad_scale = 1.0
+        grad_scale = 0.5
     
 
         return grad_scale*grad_inp*grad_input, None, None, None, None

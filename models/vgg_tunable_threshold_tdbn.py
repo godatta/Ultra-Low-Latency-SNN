@@ -99,16 +99,16 @@ class VGG_TUNABLE_THRESHOLD_tdbn(nn.Module):
                             #nn.Dropout(0.5),
                             nn.Linear(4096, labels, bias=False)
                             )
-        # for l in range(len(self.features)):
-        #     if isinstance(self.features[l], (ThrBiAct, SubBiAct, HoyerBiAct)):
-        #         self.threshold['t'+str(l)] 	= nn.Parameter(torch.tensor(default_threshold))
-        #         #percentile['t'+str(l)]  = nn.Parameter(torch.ones(9))
-        # prev = len(self.features)
-        # for l in range(len(self.classifier)-1):#-1
-        #     if isinstance(self.classifier[l], (ThrBiAct, SubBiAct, HoyerBiAct)):
-        #         self.threshold['t'+str(prev+l)]	= nn.Parameter(torch.tensor(default_threshold))
-        #         #percentile['t'+str(prev+l)]  = nn.Parameter(torch.ones(9))        
-        # self.threshold 	= nn.ParameterDict(self.threshold)
+        for l in range(len(self.features)):
+            if isinstance(self.features[l], (ThrBiAct, SubBiAct, HoyerBiAct)):
+                self.threshold['t'+str(l)] 	= nn.Parameter(torch.tensor(default_threshold))
+                #percentile['t'+str(l)]  = nn.Parameter(torch.ones(9))
+        prev = len(self.features)
+        for l in range(len(self.classifier)-1):#-1
+            if isinstance(self.classifier[l], (ThrBiAct, SubBiAct, HoyerBiAct)):
+                self.threshold['t'+str(prev+l)]	= nn.Parameter(torch.tensor(default_threshold))
+                #percentile['t'+str(prev+l)]  = nn.Parameter(torch.ones(9))        
+        self.threshold 	= nn.ParameterDict(self.threshold)
         
         # print(self.features)
         #self.epoch = nn.parameter(epoch)
@@ -216,7 +216,7 @@ class VGG_TUNABLE_THRESHOLD_tdbn(nn.Module):
                 # out = self.relu(out_prev)
                 # 2. x/thr -> act
                 # out = out_prev
-                # out = out_prev/getattr(self.threshold, 't'+str(l))
+                out_prev = out_prev/getattr(self.threshold, 't'+str(l))
                 # out = Clamp_func.apply(out_prev)
                 # out = out_prev/torch.abs(getattr(self.threshold, 't'+str(l)))
                 # self.test_hoyer_thr[i] = self.get_hoyer_thr(out.clone().detach(), l)
@@ -272,7 +272,7 @@ class VGG_TUNABLE_THRESHOLD_tdbn(nn.Module):
                         #     mask[out<torch.max(out).clone().detach()] = 1.0
                         #     act_out += torch.sum(torch.abs(out*mask)).clone()
                 out_prev = self.features[l](out_prev)
-                self.relu_batch_num += self.num_relu(out_prev.clone().detach(), 0.0, 1.0, torch.max(out_prev).clone().detach())
+                # self.relu_batch_num += self.num_relu(out_prev.clone().detach(), 0.0, 1.0, torch.max(out_prev).clone().detach())
                 out_prev = self.dropout_conv(out_prev)
                 # out_prev = out
                 # threshold_out.append(hoyer_thr)

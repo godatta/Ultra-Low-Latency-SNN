@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from models.self_modules import HoyerBiAct
-
+from models.cus_conv import customConv2
 
 
 __all__ = ['resnet18', 'resnet20', 'resnet34', 'resnet34_cifar', 'resnet50', 'resnet101', 'resnet152']
@@ -275,33 +275,35 @@ class HoyerResNet(nn.Module):
         self.if_spike       = True if start_spike_layer == 0 else False 
         self.test_hoyer_thr = torch.tensor([0.0]*15)    
         if dataset == 'CIFAR10':
-            self.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
-            # self.pre_process = nn.Sequential(
-            #                     nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False),
-            #                     nn.BatchNorm2d(64),
-            #                     HoyerBiAct(num_features=64, spike_type=self.spike_type, x_thr_scale=self.x_thr_scale, if_spike=self.if_spike),
+            # self.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
+            # self.conv1 = customConv2(in_channels=3, out_channels=64, kernel_size=(3 ,3), stride = 1, padding = 1)
+            self.conv1 = nn.Sequential(
+                                nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False),
+                                # customConv2(in_channels=3, out_channels=64, kernel_size=(3 ,3), stride = 1, padding = 1),
+                                nn.BatchNorm2d(64),
+                                HoyerBiAct(num_features=64, spike_type=self.spike_type, x_thr_scale=self.x_thr_scale, if_spike=self.if_spike),
 
-            #                     nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1, bias=False),
-            #                     nn.BatchNorm2d(64),
+                                nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1, bias=False),
+                                nn.BatchNorm2d(64),
 
-            #                     HoyerBiAct(num_features=64, spike_type=self.spike_type, x_thr_scale=self.x_thr_scale, if_spike=self.if_spike),
-            #                     nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1, bias=False),
-            #                     # nn.MaxPool2d(2),
-            #                     # nn.BatchNorm2d(64),
-            #                     # HoyerBiAct(num_features=64, spike_type=self.spike_type)
-            #                     )
+                                HoyerBiAct(num_features=64, spike_type=self.spike_type, x_thr_scale=self.x_thr_scale, if_spike=self.if_spike),
+                                nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1, bias=False),
+                                # nn.MaxPool2d(2),
+                                # nn.BatchNorm2d(64),
+                                # HoyerBiAct(num_features=64, spike_type=self.spike_type)
+                                )
         elif dataset == 'IMAGENET':
             self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3,
                                 bias=False)
         else:
             raise RuntimeError('only for ciafar10 and imagenet now')
-        # self.bn1 = nn.BatchNorm2d(64)
+        self.bn1 = nn.BatchNorm2d(64)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
         self.layer1 = self._make_layer(block, 64, num_blocks[0])
         self.layer2 = self._make_layer(block, 128, num_blocks[1], stride=2)
         self.layer3 = self._make_layer(block, 256, num_blocks[2], stride=2)
         self.layer4 = self._make_layer(block, 512, num_blocks[3], stride=2)
-        self.bn1     = nn.BatchNorm2d(last_bn_c)
+        # self.bn1     = nn.BatchNorm2d(last_bn_c)
         self.fc_act = HoyerBiAct(spike_type='sum', x_thr_scale=self.x_thr_scale, if_spike=self.if_spike)
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         self.fc = nn.Linear(512 * block.expansion, labels)
@@ -343,6 +345,7 @@ class HoyerResNet(nn.Module):
         return nn.Sequential(*layers)
 
     def hoyer_loss(self, x):
+        x[x<0]=0
         if torch.sum(torch.abs(x))>0: #  and l < self.start_spike_layer
             if self.loss_type == 'mean':
                 return torch.mean(torch.sum(torch.abs(x), dim=(1,2,3))**2 / torch.sum((x)**2, dim=(1,2,3)))
@@ -353,13 +356,14 @@ class HoyerResNet(nn.Module):
                 # 1.0 is the max thr
                 hoyer_thr = torch.nan_to_num(hoyer_thr, nan=1.0)
                 return torch.mean(hoyer_thr)
+        return 0.0
 
 
     def forward(self, x):
         act_out = 0.0
         x = self.conv1(x)
         x = self.maxpool(x)
-        # x = self.bn1(x) #  for 1.0
+        x = self.bn1(x) #  for 1.0
         act_out += self.hoyer_loss(x.clone())
 
         for i,layers in enumerate([self.layer1, self.layer2, self.layer3, self.layer4]):
@@ -369,7 +373,7 @@ class HoyerResNet(nn.Module):
                 act_out += self.hoyer_loss(x.clone())
             # x = layers(x)
             # act_out += self.hoyer_loss(x.clone())
-        x = self.bn1(x) # for 2.0
+        # x = self.bn1(x) # for 2.0
         x = self.avgpool(x)
         x = x.view(x.size(0), -1)
         # act_out += self.hoyer_loss(x.clone())

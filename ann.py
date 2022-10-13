@@ -1,4 +1,5 @@
 import argparse
+from re import I
 from tabnanny import verbose
 
 from models.vgg_tunable_threshold_tdbn import VGG_TUNABLE_THRESHOLD_tdbn
@@ -24,6 +25,7 @@ import copy
 from tqdm import tqdm
 from math import cos, pi
 from utils.net_utils import *
+from collections import defaultdict
 # from torch.utils.tensorboard import SummaryWriter
 import wandb
 from torch.utils.data.distributed import DistributedSampler
@@ -133,10 +135,12 @@ def compute_mac(model, dataset):
     print('{:e}'.format(sum(macs)))
     exit()
 
-total_feat_out = []
+total_feat_out = defaultdict(list)
+total_spike_count = defaultdict(list)
+layer_count = 0
 all_layers_act = torch.tensor([0.0, 0.0, 0.0, 0.0])
 
-def cal_act_stas(x, min_thr_scale, max_thr_scale, thr):
+def cal_act_stas(x, min_thr_scale, max_thr_scale, thr=1.0):
     min = (x.clone().detach()<=min_thr_scale*thr).sum()
     max = (x.clone().detach()>=max_thr_scale*thr).sum()
     total = x.view(-1).shape[0]
@@ -148,6 +152,27 @@ def hook_fn_forward(module, input, output):
     # print((input[0]).shape)
     global all_layers_act
     all_layers_act += cal_act_stas(output, 0.0, 1.0, 1.0)
+
+def hook_get_input_dist(module, input, output):
+    global total_feat_out
+    global total_spike_count
+    global layer_count
+    # print(module, input[0].shape)
+    total_num = input[0].view(-1).shape[0]
+    # input_np = input[0].view(-1).clone().detach().cpu().numpy() 
+    # input_np =  (input[0].view(-1) / module.threshold.data).clone().detach().cpu().numpy() 
+    # input_np = input_np[input_np<=1]
+    # input_np[input_np < 0.0] = 0.0
+    # total_feat_out[layer_count] = input_np
+    # print(layer_count, len(total_feat_out[layer_count]), len(total_feat_out[layer_count])/total_num)
+    
+    output_np = output.view(-1).clone().detach().cpu().numpy()
+    assert int(np.sum(output_np)) == int(sum(output_np==1.0))
+    # total_spike_count[layer_count] = [np.sum(output_np)/total_num, np.sum(output_np), total_num]
+    total_spike_count[layer_count] = np.sum(output_np)/total_num
+    print(layer_count, output.shape, np.sum(output_np)/total_num, np.sum(output_np), total_num)
+    layer_count += 1
+
 
 def train(epoch, loader):
 
@@ -401,15 +426,17 @@ def test(epoch, loader):
             
             # if get_scale and test_only:
             #     output, thresholds, relu_batch_num, act_out = model(data, -2)
-            if test_only and get_layer_output and batch_idx < 100 and epoch == 1:
-                output, act_out = model(data, -1)
-                for l in act_out.keys():
-                    act_out[l] = act_out[l][act_out[l]>0]
-                    act_out[l] = act_out[l][act_out[l]<1.0]
-                    if l not in total_output:
-                        total_output[l] = torch.tensor([])
-                    total_output[l] = torch.cat((total_output[l], act_out[l].cpu()))
-
+            if test_only and get_layer_output and batch_idx == 0:
+                output, act_out = model(data)
+                global total_feat_out
+                print('start saving......')
+                torch.save(total_feat_out, 'network_output/'+identifier)
+                print('Save successfully!')
+                global total_spike_count
+                print('start saving......')
+                torch.save(total_spike_count, 'network_output/'+identifier+'_spike')
+                print('Save successfully!')
+                exit()
             elif test_only and batch_idx <= 0 and epoch == 10:
                 output, act_out = model(data, -1)
                 # act_reg = 0.0
@@ -524,8 +551,7 @@ def test(epoch, loader):
         if get_scale:
             torch.save(hoyer_thr_per_batch, 'output/my_hoyer_x_scale_factor')
             torch.save(final_avg, 'output/my_hoyer_x_scale_factor_final_avg')
-        if get_layer_output:
-            torch.save(total_output, 'output/ann_tdbn_layer_output')
+        
         if not test_only and use_wandb:
             wandb.log({'test_acc': top1.avg}, step=epoch)
         # writer.add_scalar('Accuracy/test', top1.avg, epoch)
@@ -947,8 +973,8 @@ if __name__ == '__main__':
         # /nas/vista-ssd01/batl/public_datasets/ImageNet
         # traindir    = os.path.join('/home/ubuntu/data/imagenet', 'train')
         # valdir      = os.path.join('/home/ubuntu/data/imagenet', 'val')
-        traindir    = os.path.join('/nas/vista-ssd01/batl/public_datasets/ImageNet', 'train')
-        valdir      = os.path.join('/nas/vista-ssd01/batl/public_datasets/ImageNet', 'val')
+        traindir    = os.path.join('/home/ubuntu/imagenet', 'train')
+        valdir      = os.path.join('/home/ubuntu/imagenet', 'val')
         if im_size == None:
             im_size = 224
             train_dataset    = datasets.ImageFolder(
@@ -1039,7 +1065,7 @@ if __name__ == '__main__':
     if architecture.lower() == 'vgg16':
         # act_type == 'tdbn'
         # model = VGG_TUNABLE_THRESHOLD_tdbn(**params_dict)
-        model = VGG_TUNABLE_THRESHOLD_tdbn_imagenet(**params_dict)
+        model = VGG_TUNABLE_THRESHOLD_tdbn(**params_dict)
         # model = VGG_TUNABLE_THRESHOLD_tdbn(vgg_name=architecture, labels=labels, dataset=dataset, kernel_size=kernel_size,\
         #     linear_dropout=linear_dropout, conv_dropout = conv_dropout, default_threshold=threshold,\
         #     net_mode=net_mode, loss_type=loss_type, spike_type=spike_type, bn_type=bn_type, start_spike_layer=start_spike_layer,\
@@ -1146,6 +1172,11 @@ if __name__ == '__main__':
             if isinstance(module, (HoyerBiAct, nn.ReLU)):
                 # print('module name: {}'.format(name))
                 module.register_forward_hook(hook_fn_forward)
+    if get_layer_output:
+         for name, module in model.named_modules():
+            if isinstance(module, (HoyerBiAct, nn.ReLU)):
+                # print('module name: {}'.format(name))
+                module.register_forward_hook(hook_get_input_dist)
 
     all_parameters = model.parameters()
     weight_parameters = []
