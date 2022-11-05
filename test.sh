@@ -4,7 +4,9 @@ python ann.py --dataset CIFAR10 --batch_size 256 --im_size 32 --architecture VGG
 --momentum 0.95 --weight_decay 0.0005 --seed 0 --test_only --linear_dropout 0 --conv_dropout 0 \
 --hoyer_decay 1e-8 --net_mode 'ori' --pool_pos 'before_relu' --test_type 'v1' \
 --spike_type 'cw' --bn_type 'bn' --start_spike_layer 0 --loss_type 'sum' --x_thr_scale 1.0 --weight_quantize 0 --use_hook \
---pretrained_ann '/nas/home/zeyul/Knowledge-Distillation-Zoo/model_t/ann_vgg16_light_cifar10_202209290043.pth' 
+--pretrained_ann 'checkpoints/ann_vgg16_light_cifar10_202209290044.pth'
+#'/nas/home/zeyul/Knowledge-Distillation-Zoo/model_t/ann_vgg16_light_cifar10_202209290044.pth' 
+
 # --get_layer_output
 # 'trained_models_ann/ann_vgg16_relu_cifar10_202209212335.pth' --get_layer_output
 # 'trained_models_ann/ann_vgg16_relu_cifar10_202209211209.pth' --get_layer_output

@@ -12,11 +12,11 @@ cfg = {
 }
 
 
-class VGG16_light(nn.Module):
+class VGG16_light_without_bn(nn.Module):
     def __init__(self, vgg_name='VGG16', labels=1000, dataset = 'IMAGENET', kernel_size=3, linear_dropout=0.1, conv_dropout=0.1, default_threshold=1.0, \
         net_mode='ori', loss_type='sum', spike_type = 'sum', bn_type='bn', start_spike_layer=0, conv_type='ori', pool_pos='after_relu', sub_act_mask=False, \
         x_thr_scale=1.0, pooling_type='max', weight_quantize=0, im_size=224, if_set_0=True):
-        super(VGG16_light, self).__init__()
+        super(VGG16_light_without_bn, self).__init__()
         self.dataset = dataset
         self.spike_type = spike_type
         self.x_thr_scale = x_thr_scale
@@ -24,7 +24,6 @@ class VGG16_light(nn.Module):
         self.conv_dropout = conv_dropout
         self.if_set_0 = if_set_0
         self.features = self._make_layers(cfg[vgg_name])
-        self.loss_type = loss_type
         fc_spike_type = 'fixed' if spike_type == 'fixed' else 'sum'
         if dataset=='IMAGENET':
             self.classifier = nn.Sequential(
@@ -46,6 +45,31 @@ class VGG16_light(nn.Module):
                             nn.Dropout(linear_dropout),
                             nn.Linear(4096, labels, bias=False))
         # self._initialize_weights2()
+        self.spike_count = {}
+    def neuron_init(self, x):
+        self.batch_size = x.size(0)
+        self.width 		= x.size(2)
+        self.height 	= x.size(3)			
+
+        self.mem 	= {}
+        self.spike_count = {}
+
+        for l in range(len(self.features)):
+                                
+            if isinstance(self.features[l], nn.Conv2d):
+                self.mem[l] 		= torch.zeros(self.batch_size, self.features[l].out_channels, self.width, self.height)
+                self.spike_count[l] 	= torch.zeros(self.mem[l].shape)
+            elif isinstance(self.features[l], nn.MaxPool2d):
+                self.width = self.width//self.features[l].kernel_size
+                self.height = self.height//self.features[l].kernel_size
+
+        prev = len(self.features)
+
+        for l in range(len(self.classifier)):
+            
+            if isinstance(self.classifier[l], nn.Linear):
+                self.mem[prev+l] 		= torch.zeros(self.batch_size, self.classifier[l].out_features)
+                self.spike_count[prev+l] 		= torch.zeros(self.mem[prev+l].shape)
                             
     def hoyer_loss(self, x, thr):
         # return torch.sum(x)
@@ -96,20 +120,12 @@ class VGG16_light(nn.Module):
             if i+1 < len(cfg) and cfg[i+1] == 'M':
                 layers += [
                         conv,
-                        nn.MaxPool2d(kernel_size=2, stride=2),
-                        nn.BatchNorm2d(x),
                         HoyerBiAct(num_features=x, spike_type=self.spike_type, x_thr_scale=self.x_thr_scale, if_spike=self.if_spike, if_set_0=self.if_set_0),
-                        nn.Dropout(self.conv_dropout)]
-                # layers += [
-                #         conv,
-                #         nn.BatchNorm2d(x),
-                #         HoyerBiAct(num_features=x, spike_type=self.spike_type, x_thr_scale=self.x_thr_scale, if_spike=self.if_spike),
-                #         nn.Dropout(self.conv_dropout),
-                #         nn.MaxPool2d(kernel_size=2, stride=2)]
+                        nn.Dropout(self.conv_dropout),
+                        nn.MaxPool2d(kernel_size=2, stride=2),]
             else:
                 layers += [
                         conv,
-                        nn.BatchNorm2d(x),
                         HoyerBiAct(num_features=x, spike_type=self.spike_type, x_thr_scale=self.x_thr_scale, if_spike=self.if_spike, if_set_0=self.if_set_0),
                         nn.Dropout(self.conv_dropout)]
             in_channels = x

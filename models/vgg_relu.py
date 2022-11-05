@@ -16,7 +16,7 @@ cfg = {
 class VGG16_ReLU(nn.Module):
     def __init__(self, vgg_name='VGG16', labels=10, dataset = 'CIFAR10', kernel_size=3, linear_dropout=0.1, conv_dropout=0.1, default_threshold=1.0, \
         net_mode='ori', loss_type='sum', spike_type = 'sum', bn_type='bn', start_spike_layer=50, conv_type='ori', pool_pos='after_relu', sub_act_mask=False, \
-        x_thr_scale=1.0, pooling_type='max', weight_quantize=0, im_size=224):
+        x_thr_scale=1.0, pooling_type='max', weight_quantize=0, im_size=224, if_set_0=True):
         super(VGG16_ReLU, self).__init__()
         self.dataset = dataset
         self.spike_type = spike_type
@@ -123,10 +123,3 @@ class VGG16_ReLU(nn.Module):
                 if m.bias is not None:
                     m.bias.data.zero_()
 
-def test():
-    net = VGG('VGG11')
-    x = torch.randn(2,3,32,32)
-    y = net(x)
-    print(y.size())
-
-# test()
