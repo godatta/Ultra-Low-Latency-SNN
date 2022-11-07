@@ -45,3 +45,4 @@ utils/__pycache__
 z_tools
 ckpts
 model_test.py
+*.pth

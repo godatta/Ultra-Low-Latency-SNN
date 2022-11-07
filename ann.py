@@ -444,11 +444,11 @@ def test(epoch, loader):
                     'optimizer'     : optimizer.state_dict()
             }
             try:
-                os.mkdir('./trained_models_ann/')
+                os.mkdir('./saved_models/')
             except OSError:
                 pass
             
-            filename = identifier + '.pth'
+            filename = './saved_models/' + identifier + '.pth'
             if not args.dont_save and not test_only:
                 torch.save(state,filename)
         #dis = np.array(dis)
