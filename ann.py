@@ -8,6 +8,7 @@ from models.vgg_light import VGG16_light
 from models.vgg_relu import VGG16_ReLU
 from models.vgg_light_only_bn import VGG16_light_only_bn
 from models.vgg_light_without_bn import VGG16_light_without_bn
+from models.vgg_light_multi_steps import VGG16_light_multi_steps
 from models.resnet_ori import resnet18_ori
 from models.resnet_only_bn import resnet18_only_bn
 from models.resnet_without_bn import resnet18_without_bn
@@ -23,7 +24,7 @@ import os
 import numpy as np
 import copy
 # import cv2
-from tqdm import tqdm
+# from tqdm import tqdm
 from math import cos, pi
 from collections import defaultdict
 # from utils.net_utils import *
@@ -538,6 +539,9 @@ if __name__ == '__main__':
     parser.add_argument('--use_apex',               action='store_true',                        help='use mixed precision training')
     parser.add_argument('--get_input_hoyer_spike',  action='store_true',                        help='get the input of the hoyer spike layers')  
     parser.add_argument('--if_set_0',               action='store_true',                        help='if set the value > thr be 0, when calculate the hoyer') 
+    parser.add_argument('--time_step',              default=1,                  type=int,       help='time step for the spike layer')
+    parser.add_argument('--leak',                   default=1.0,                type=float,     help='leak')
+
 
     parser.add_argument('--nodes',                  default=1,                  type=int,       help='nodes')
     parser.add_argument('--rank',                   default=0,                  type=int,       help='ranking within the nodes')
@@ -605,6 +609,8 @@ if __name__ == '__main__':
     if_set_0        = args.if_set_0
     lr_decay        = args.lr_decay
     warmup          = args.warmup
+    time_step       = args.time_step
+    leak            = args.leak
     use_apex        = args.use_apex
     gpu_nums        = (len(args.devices)+1) // 2
     
@@ -764,6 +770,8 @@ if __name__ == '__main__':
         model = VGG16_light_only_bn(**params_dict)
     elif architecture.lower() == 'vgg16_light_without_bn':
         model = VGG16_light_without_bn(**params_dict)
+    elif architecture.lower() == 'vgg16_light_multi_steps':
+        model = VGG16_light_multi_steps(T=time_step, leak=leak, **params_dict)
     elif architecture[0:3].lower() == 'res':
         if architecture.lower() == 'resnet18':
             model = resnet18(**params_dict)
