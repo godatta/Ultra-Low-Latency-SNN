@@ -12,6 +12,8 @@ from models.vgg_light_multi_steps import VGG16_light_multi_steps
 from models.resnet_ori import resnet18_ori
 from models.resnet_only_bn import resnet18_only_bn
 from models.resnet_without_bn import resnet18_without_bn
+from models.VGG_models import *
+import data_loaders
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -203,6 +205,7 @@ def train(epoch, loader):
         
         optimizer.zero_grad()
         output, act_out = model(data)
+        #output = model(data)
         loss = F.cross_entropy(output,target)
 
         data_size = data.size(0)
@@ -491,7 +494,7 @@ if __name__ == '__main__':
     parser.add_argument('--lr_reduce',              default=10,                 type=int,       help='reduction factor for learning rate')
     parser.add_argument('--lr_decay',               default='step',             type=str,       help='mode for learning rate decay')
 
-    parser.add_argument('--dataset',                default='CIFAR10',          type=str,       help='dataset name', choices=['MNIST','CIFAR10','CIFAR100', 'IMAGENET'])
+    parser.add_argument('--dataset',                default='CIFAR10',          type=str,       help='dataset name', choices=['MNIST','CIFAR10','CIFAR100', 'IMAGENET', 'DVS-CIFAR10'])
     parser.add_argument('--dataset_path',           default='data/imagenet',    type=str,       help='the path to dataset')
     parser.add_argument('--batch_size',             default=64,                 type=int,       help='minibatch size')
     parser.add_argument('--im_size',                default=None,               type=int,       help='image size')
@@ -703,6 +706,13 @@ if __name__ == '__main__':
         train_dataset   = datasets.CIFAR10(root='./cifar_data', train=True, download=True,transform =transform_train)
         test_dataset    = datasets.CIFAR10(root='./cifar_data', train=False, download=True, transform=transform_test)
     
+    elif dataset == 'DVS-CIFAR10':
+        train_dataset, test_dataset = data_loaders.build_dvscifar('/m2/shared/dvs-cifar10')
+        # train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True,
+        #                                        num_workers=16, pin_memory=True)
+        # test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=args.batch_size,
+        #                                       shuffle=False, num_workers=16, pin_memory=True)
+        labels = 10
     elif dataset == 'MNIST':
         train_dataset   = datasets.MNIST(root='./mnist/', train=True, download=True, transform=transforms.ToTensor()
             )
@@ -745,8 +755,8 @@ if __name__ == '__main__':
 
 
     if gpu_nums == 1:
-        train_loader    = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=batch_size, num_workers=2, shuffle=True)
-        test_loader     = torch.utils.data.DataLoader(dataset=test_dataset, batch_size=batch_size, num_workers=2, shuffle=False)
+        train_loader    = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=batch_size, num_workers=10, shuffle=True)
+        test_loader     = torch.utils.data.DataLoader(dataset=test_dataset, batch_size=batch_size, num_workers=10, shuffle=False)
     else:
         train_sampler = DistributedSampler(train_dataset)
         test_sampler = DistributedSampler(test_dataset)
@@ -764,6 +774,8 @@ if __name__ == '__main__':
 
     if architecture.lower() == 'vgg16_light':
         model = VGG16_light(**params_dict)
+    elif architecture.lower() == 'vgg_dvs':
+        model = VGGSNNwoAP()
     elif architecture.lower() == 'vgg16_relu':
         model = VGG16_ReLU(**params_dict)
     elif architecture.lower() == 'vgg16_light_only_bn':
