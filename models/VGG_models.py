@@ -60,10 +60,15 @@ class VGGSNNwoAP(nn.Module):
 
     def forward(self, input):
         # input = add_dimention(input, self.T)
-        x = self.features(input)
+        # x = self.features(input)
+        hoyer_loss = 0.0
+        x = input
+        for layer in self.features:
+            x, hoyer_loss_layer = layer(x)
+            hoyer_loss += hoyer_loss_layer
         x = torch.flatten(x, 2)
         x = self.classifier(x)
-        return x
+        return x, hoyer_loss
 
 
 

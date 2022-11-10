@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from models.self_modules import HoyerBiAct
 
 class TensorNormalization(nn.Module):
     def __init__(self,mean, std):
@@ -43,14 +44,36 @@ class Layer(nn.Module):
         super(Layer, self).__init__()
         self.fwd = SeqToANNContainer(
             nn.Conv2d(in_plane,out_plane,kernel_size,stride,padding),
-            nn.BatchNorm2d(out_plane)
+            nn.BatchNorm2d(out_plane),
         )
-        self.act = LIFSpike()
+        # self.act = LIFSpike()
+        self.act = SeqToANNContainer(
+            HoyerBiAct(num_features=out_plane, spike_type='cw')
+        )
+    
+    def hoyer_loss(self, x, thr=1.0):
+        # return torch.sum(x)
+        x[x<0.0] = 0
+        # x[x>thr] = 0
+        if torch.sum(torch.abs(x))>0: #  and l < self.start_spike_layer
+            return  (torch.sum(torch.abs(x))**2 / torch.sum((x)**2))
+            # if self.loss_type == 'mean':
+            #     return torch.mean(torch.sum(torch.abs(x), dim=(1,2,3))**2 / torch.sum((x)**2, dim=(1,2,3)))
+            # elif self.loss_type == 'sum':
+            #     return  (torch.sum(torch.abs(x))**2 / torch.sum((x)**2))
+            # elif self.loss_type == 'cw':
+            #     hoyer_thr = torch.sum((x)**2, dim=(0,2,3)) / torch.sum(torch.abs(x), dim=(0,2,3))
+            #     # 1.0 is the max thr
+            #     hoyer_thr = torch.nan_to_num(hoyer_thr, nan=1.0)
+            #     return torch.mean(hoyer_thr)
+        return 0.0
 
     def forward(self,x):
         x = self.fwd(x)
         x = self.act(x)
-        return x
+        # if apply hoyer loss after spike
+        hoyer_loss = self.hoyer_loss(x)
+        return x, hoyer_loss
 
 class APLayer(nn.Module):
     def __init__(self,kernel_size):
