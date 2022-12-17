@@ -47,10 +47,10 @@ class VGG16_light(nn.Module):
                             nn.Linear(4096, labels, bias=False))
         # self._initialize_weights2()
                             
-    def hoyer_loss(self, x, thr):
+    def hoyer_loss(self, x, thr=0.0):
         # return torch.sum(x)
         x[x<0.0] = 0
-        # x[x>thr] = 0
+        x[x>=thr] = thr
         if torch.sum(torch.abs(x))>0: #  and l < self.start_spike_layer
             return  (torch.sum(torch.abs(x))**2 / torch.sum((x)**2))
             # if self.loss_type == 'mean':
@@ -67,18 +67,20 @@ class VGG16_light(nn.Module):
         act_loss = 0.0
         out = x
         for l in self.features:
-            out = l(out)
-            if isinstance(l, HoyerBiAct):
-                act_loss += self.hoyer_loss(out.clone(), l.threshold.clone().detach())
             # out = l(out)
+            if isinstance(l, HoyerBiAct):
+                # act_loss += self.hoyer_loss(out.clone())
+                act_loss += self.hoyer_loss(out.clone(), l.threshold.clone().detach())
+            out = l(out)
         
         out = out.view(out.size(0), -1)
         
         for i,l in enumerate(self.classifier):
-            out = l(out)
-            if isinstance(l, HoyerBiAct):
-                act_loss += self.hoyer_loss(out.clone(), l.threshold.clone().detach())
             # out = l(out)
+            if isinstance(l, HoyerBiAct):
+                # act_loss += self.hoyer_loss(out.clone())
+                act_loss += self.hoyer_loss(out.clone(), l.threshold.clone().detach())
+            out = l(out)
  
         return out, act_loss
 

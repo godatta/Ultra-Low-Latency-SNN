@@ -12,7 +12,9 @@ from models.vgg_light_multi_steps import VGG16_light_multi_steps
 from models.resnet_ori import resnet18_ori
 from models.resnet_only_bn import resnet18_only_bn
 from models.resnet_without_bn import resnet18_without_bn
+from models.hoyer_resnet_multi_steps import resnet18_multi_steps, resnet20_multi_steps
 from models.VGG_models import *
+from models.mobilenet import MobileNetV2Cifar, HoyerMobileNetV2Cifar
 import data_loaders
 import torch
 import torch.nn as nn
@@ -153,8 +155,14 @@ def cal_act_stas(x, min_thr_scale, max_thr_scale, thr):
 
 # 定义 forward hook function
 def hook_fn_forward(module, input, output):
-    # print(module, torch.max(output))
-    # print((input[0]).shape)
+    # global time_step_count
+    # if time_step_count < time_step:
+    #     if input[0].shape[1:] == torch.Size([64, 32, 32]):
+    #         time_step_count += 1
+    #     return
+    # # print(module, input[0].shape, output.shape)
+    # # print((input[0]).shape)
+    # if time_step_count == time_step:
     global all_layers_act
     all_layers_act += cal_act_stas(output, 0.0, 1.0, 1.0)
 
@@ -165,7 +173,7 @@ def hook_get_input_dist(module, input, output):
     # print(module)
     total_num = input[0].view(-1).shape[0]
     input_np = input[0].view(-1).clone().detach().cpu().numpy() 
-    # input_np =  (input[0].view(-1) / module.threshold.data).clone().detach().cpu().numpy() 
+    input_np =  (input[0].view(-1) / module.threshold.data).clone().detach().cpu().numpy() 
     # input_np = input_np[input_np<=1]
     input_np[input_np < 0.0] = 0.0
     total_feat_out[layer_count] = input_np
@@ -228,8 +236,10 @@ def train(epoch, loader):
 
         if use_hook and local_rank==0:
             global all_layers_act
+            # global time_step_count
             relu_total_num += all_layers_act
             all_layers_act = torch.tensor([0.0, 0.0, 0.0, 0.0])
+            # time_step_count = 0
     
         if local_rank==0 and ((epoch == 1 and batch_idx < 10) or (dataset == 'IMAGENET' and batch_idx%600==1)):
             for param_group in optimizer.param_groups:
@@ -428,8 +438,11 @@ def test(epoch, loader):
             top5.update(prec5.item(), data_size)
             if use_hook and local_rank==0:
                 global all_layers_act
+                # global time_step_count
                 relu_total_num += all_layers_act
+                # print(relu_total_num)
                 all_layers_act = torch.tensor([0.0, 0.0, 0.0, 0.0])
+                # time_step_count = 0
 
 
 
@@ -789,6 +802,10 @@ if __name__ == '__main__':
             model = resnet18(**params_dict)
         elif architecture.lower() == 'resnet20':
             model = resnet20(**params_dict)
+        elif architecture.lower() == 'resnet18_multi_steps':
+            model = resnet18_multi_steps(T=time_step, leak=leak, **params_dict)
+        elif architecture.lower() == 'resnet20_multi_steps':
+            model = resnet20_multi_steps(T=time_step, leak=leak, **params_dict)
         elif architecture.lower() == 'resnet34':
             model = resnet34(**params_dict)
         elif architecture.lower() == 'resnet34_cifar':
@@ -805,6 +822,8 @@ if __name__ == '__main__':
             model = resnet18_only_bn(**params_dict)
         elif architecture.lower() == 'resnet18_without_bn':
             model = resnet18_without_bn(**params_dict)
+    elif architecture.lower() == 'mobilenet':
+        model = HoyerMobileNetV2Cifar(T=time_step, leak=leak, **params_dict)
     
     f.write('\n{}'.format(model))
     
@@ -885,7 +904,7 @@ if __name__ == '__main__':
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda0, last_epoch=-1)
 
     if gpu_nums > 1:
-        model = torch.nn.parallel.DistributedDataParallel(model)
+        model = torch.nn.parallel.DistributedDataParallel(model, find_unused_parameters=True)
 
     if not test_only and use_wandb and local_rank == 0:
         dir = os.path.join('wandb', identifier)
