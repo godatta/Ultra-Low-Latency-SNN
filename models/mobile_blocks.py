@@ -87,6 +87,8 @@ class HoyerBlock(nn.Module):
         x[x>=thr] = thr
         if torch.sum(torch.abs(x))>0: #  and l < self.start_spike_layer
             return  (torch.sum(torch.abs(x))**2 / torch.sum((x)**2))   
+        else:
+            return 0.0
 
     def forward(self, inputs, timestep=1):
         # main path
