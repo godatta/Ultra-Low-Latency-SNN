@@ -29,9 +29,10 @@
 # --spike_type 'cw' --bn_type 'bn' --loss_type 'sum' --start_spike_layer 0 --x_thr_scale 1.0 --weight_quantize 0 \
 # --description 'dist resnet20 t=2' --warmup 0 --lr_decay 'step' --reg_thr --log --use_hook --time_step 2
 
+# echo $CUDA_VISIBLE_DEVICES
 torchrun --nproc_per_node=2 --master_port 29501 ann.py --dataset CIFAR10 --batch_size 64 --im_size 32 --architecture mobilenet \
 --learning_rate 1e-4 --epochs 600 --lr_interval '0.50 0.70 0.85' --lr_reduce 5 --relu_threshold 1.0 \
 --optimizer Adam --weight_decay 0.0001 --momentum 0.9 --amsgrad True --devices 2,5 --seed 0 --linear_dropout 0 --conv_dropout 0 \
 --hoyer_decay 1e-8 --net_mode 'ori' --pool_pos 'before_relu' \
 --spike_type 'cw' --bn_type 'bn' --loss_type 'sum' --start_spike_layer 0 --x_thr_scale 1.0 --weight_quantize 0 \
---description 'dist mobilenet t=2' --warmup 0 --lr_decay 'step' --reg_thr --log --use_hook --time_step 1
+--description 'dist mobilenet t=2' --warmup 0 --lr_decay 'step' --reg_thr --log --use_hook --time_step 2
