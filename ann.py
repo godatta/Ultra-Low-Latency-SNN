@@ -14,7 +14,7 @@ from models.resnet_only_bn import resnet18_only_bn
 from models.resnet_without_bn import resnet18_without_bn
 from models.hoyer_resnet_multi_steps import resnet18_multi_steps, resnet20_multi_steps
 from models.VGG_models import *
-from models.mobilenet import MobileNetV2Cifar, HoyerMobileNetV2Cifar
+from models.mobilenet import MobileNetV2Cifar, HoyerMobileNetV2Cifar, HoyerMobileNetV1Cifar
 import data_loaders
 import torch
 import torch.nn as nn
@@ -33,7 +33,7 @@ from math import cos, pi
 from collections import defaultdict
 # from utils.net_utils import *
 # from torch.utils.tensorboard import SummaryWriter
-import wandb
+# import wandb
 import math
 from torch.utils.data.distributed import DistributedSampler
 #from data_prep import *
@@ -824,6 +824,8 @@ if __name__ == '__main__':
             model = resnet18_without_bn(**params_dict)
     elif architecture.lower() == 'mobilenet':
         model = HoyerMobileNetV2Cifar(T=time_step, leak=leak, **params_dict)
+    elif architecture.lower() == 'mobilenet_v1':
+        model = HoyerMobileNetV1Cifar(T=time_step, leak=leak, **params_dict)
     
     f.write('\n{}'.format(model))
     

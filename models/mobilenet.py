@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from models.self_modules import HoyerBiAct_multi_step
-from models.mobile_blocks import BaseBlock, HoyerBlock
+from models.mobile_blocks import BaseBlock, HoyerBlock, conv_dw
 
 
 class MobileNetV2Cifar(nn.Module):
@@ -177,6 +177,49 @@ class HoyerMobileNetV2Cifar(nn.Module):
 
 
         return self.final_out, act_loss
+
+class HoyerMobileNetV1Cifar(nn.Module):
+    def __init__(self, alpha = 1, labels=1000, dataset = 'IMAGENET', kernel_size=3, linear_dropout=0.1, conv_dropout=0.1, default_threshold=1.0, \
+        net_mode='ori', loss_type='sum', spike_type = 'sum', bn_type='bn', start_spike_layer=0, conv_type='ori', pool_pos='after_relu', sub_act_mask=False, \
+        x_thr_scale=1.0, pooling_type='max', weight_quantize=0, im_size=224, if_set_0=False, T=1, leak=1.0):
+        super(HoyerMobileNetV1Cifar, self).__init__()
+        self.T = T
+        self.conv1 = nn.Conv2d(3, 32, 3, 2, 1, bias=False)
+        self.bn1 = nn.BatchNorm2d(32)
+        
+        self.model = nn.Sequential(
+            conv_dw(32, 64, 1, spike_type=spike_type, x_thr_scale=x_thr_scale),
+            conv_dw(64, 128, 2, spike_type=spike_type, x_thr_scale=x_thr_scale),
+            conv_dw(128, 128, 1, spike_type=spike_type, x_thr_scale=x_thr_scale),
+            conv_dw(128, 256, 2, spike_type=spike_type, x_thr_scale=x_thr_scale),
+            conv_dw(256, 256, 1, spike_type=spike_type, x_thr_scale=x_thr_scale),
+            conv_dw(256, 512, 2, spike_type=spike_type, x_thr_scale=x_thr_scale),
+            conv_dw(512, 512, 1, spike_type=spike_type, x_thr_scale=x_thr_scale),
+            conv_dw(512, 512, 1, spike_type=spike_type, x_thr_scale=x_thr_scale),
+            conv_dw(512, 512, 1, spike_type=spike_type, x_thr_scale=x_thr_scale),
+            conv_dw(512, 512, 1, spike_type=spike_type, x_thr_scale=x_thr_scale),
+            conv_dw(512, 512, 1, spike_type=spike_type, x_thr_scale=x_thr_scale),
+            conv_dw(512, 1024, 2, spike_type=spike_type, x_thr_scale=x_thr_scale),
+            conv_dw(1024, 1024, 1, spike_type=spike_type, x_thr_scale=x_thr_scale),
+        )
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        self.fc = nn.Linear(1024, 10)
+        self.fc_act = HoyerBiAct_multi_step(spike_type='sum', x_thr_scale=x_thr_scale)
+        self.fc_leak = nn.Parameter(torch.tensor(1.0))
+    def forward(self, x):
+        act_loss = 0.0
+        final_out = 0.0
+        for T in range(self.T):
+            prev_x = x
+            prev_x = self.bn1(self.conv1(prev_x))
+            for conv_block in self.model:
+                prev_x = conv_block(prev_x, T+1)
+                act_loss += conv_block.act_loss
+            prev_x = self.avgpool(prev_x)
+            prev_x = prev_x.view(-1, 1024)
+            prev_X = self.fc_act(prev_x)
+            final_out = final_out*self.fc_leak + self.fc(prev_x)
+        return final_out, act_loss / self.T
 
 if __name__ == "__main__":
     from torchvision.datasets import CIFAR10

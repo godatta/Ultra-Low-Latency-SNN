@@ -41,6 +41,7 @@ class HoyerBiAct(nn.Module):
         self.x_thr_scale    = x_thr_scale
         self.if_spike       = if_spike  
         self.if_set_0       = if_set_0
+        self.act_loss       = 0.0
         # self.register_buffer('x_thr_scale', torch.tensor(x_thr_scale))
         # self.register_buffer('if_spike', torch.tensor(if_spike))
              
@@ -64,9 +65,20 @@ class HoyerBiAct(nn.Module):
             self.running_hoyer_thr.zero_()  # type: ignore[union-attr]
             self.num_batches_tracked.zero_()  # type: ignore[union-attr,operator]
 
+    def hoyer_loss(self, x, thr=None):
+        # return torch.sum(x)
+        x[x<0.0] = 0
+        if thr:
+            x[x>=thr] = thr
+        if torch.sum(torch.abs(x))>0: #  and l < self.start_spike_layer
+            return  (torch.sum(torch.abs(x))**2 / torch.sum((x)**2))  
+        else:
+            return 0.0
+
     def forward(self, input):
         # calculate running estimates
         input = input / torch.abs(self.threshold)
+        self.act_loss = self.hoyer_loss(input, 1.0)
         # input = torch.clamp(input, min=0.0, max=1.0)
         if self.training:
             # clamped_input = torch.clamp((input).clone().detach(), min=0.0)
@@ -91,7 +103,7 @@ class HoyerBiAct(nn.Module):
                 # hoyer_thr = torch.mean(hoyer_cw, dim=0)
             
             with torch.no_grad():
-                self.running_hoyer_thr = self.momentum * hoyer_thr\
+                self.running_hoyer_thr = self.momentum * hoyer_thr \
                     + (1 - self.momentum) * self.running_hoyer_thr
         else:
             hoyer_thr = self.running_hoyer_thr
@@ -103,7 +115,7 @@ class HoyerBiAct(nn.Module):
             # elif self.spike_type == 'cw':
             #     hoyer_thr =torch.sum((clamped_input)**2, dim=(0,2,3)) / torch.sum(torch.abs(clamped_input), dim=(0,2,3))
             # print('running_hoyer_thr: {}'.format(self.running_hoyer_thr))
-            
+
         out = Spike_func.apply(input, hoyer_thr, self.x_thr_scale, self.spike_type, self.if_spike)
 
         return out
@@ -208,6 +220,8 @@ class HoyerBiAct_multi_step(HoyerBiAct):
         self.mem = 0.0 if T == 1 else self.mem
         # calculate running estimates
         input = input / torch.abs(self.threshold)
+        # 202301110843
+        # self.act_loss = self.hoyer_loss(input, 1.0)
         # input = torch.clamp(input, min=0.0, max=1.0)
         if self.training:
             clamped_input = torch.clamp((input).clone().detach(), min=0.0, max=1.0)
@@ -244,5 +258,7 @@ class HoyerBiAct_multi_step(HoyerBiAct):
             #     hoyer_thr =torch.sum((clamped_input)**2, dim=(0,2,3)) / torch.sum(torch.abs(clamped_input), dim=(0,2,3))
             # print('running_hoyer_thr: {}'.format(self.running_hoyer_thr))
         self.mem = self.leak*self.mem + input 
+        # 
+        self.act_loss = self.hoyer_loss(input)
         out = Spike_func.apply(self.mem, hoyer_thr, self.x_thr_scale, self.spike_type, self.if_spike)
         return out

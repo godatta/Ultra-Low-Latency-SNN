@@ -46,4 +46,4 @@ z_tools
 ckpts
 model_test.py
 *.pth
-__pycache__/*
+__pycache__/

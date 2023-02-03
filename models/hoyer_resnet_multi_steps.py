@@ -35,11 +35,13 @@ class BasicBlock(nn.Module):
 
         self.downsample = downsample
         self.stride = stride
+        self.act_loss = 0.0
 
     def forward(self, x, T):
         residual = x
         # always spike
         out = self.act(x, T)
+        self.act_loss = self.act.act_loss
         out = self.conv(out)
         out = self.bn1(out)
 
@@ -48,6 +50,7 @@ class BasicBlock(nn.Module):
             for l in self.downsample:
                 if isinstance(l, HoyerBiAct_multi_step):
                     residual = l(residual, T)
+                    self.act_loss += l.act_loss
                 else:
                     residual = l(residual)
 
@@ -309,7 +312,7 @@ class HoyerResNet_multi_steps(nn.Module):
 
     def forward(self, x):
         self.final_out = 0.0
-        act_out = 0.0
+        act_loss = 0.0
         for T in range(self.T):
             prev_x = x
             prev_x = self.conv1(prev_x)
@@ -319,12 +322,8 @@ class HoyerResNet_multi_steps(nn.Module):
 
             for i,layers in enumerate([self.layer1, self.layer2, self.layer3, self.layer4]):
                 for l in layers:
-                    # print(i, prev_x.shape)
-                    # if isinstance(l, HoyerBiAct_multi_step):
-                    #     prev_x = l(prev_x, T+1)    
-                    # else:
-                    #     prev_x = l(prev_x)
                     prev_x = l(prev_x, T+1) 
+                    act_loss += l.act_loss
                     # act_out += self.hoyer_loss(prev_x.clone())
                 # prev_x = layers(prev_x)
                 # act_out += self.hoyer_loss(prev_x.clone())
@@ -333,9 +332,10 @@ class HoyerResNet_multi_steps(nn.Module):
             prev_x = prev_x.view(prev_x.size(0), -1)
             # act_out += self.hoyer_loss(prev_x.clone())
             prev_x = self.fc_act(prev_x, T+1)
+            act_loss += self.fc_act.act_loss
             self.final_out = self.final_out*self.fc_leak + self.fc(prev_x)
 
-        return self.final_out, act_out
+        return self.final_out, act_loss / self.T
 
 
 def resnet18_multi_steps(pretrained=False, **kwargs):

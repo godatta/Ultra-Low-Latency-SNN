@@ -104,6 +104,35 @@ class HoyerBlock(nn.Module):
 
         return x
 
+
+class conv_dw(nn.Module):
+    alpha = 1
+
+    def __init__(self, input_channel, output_channel, stride, spike_type='sum', x_thr_scale=1.0):
+        """
+            t:  expansion factor, t*input_channel is channel of expansion layer
+            alpha:  width multiplier, to get thinner models
+            rho:    resolution multiplier, to get reduced representation
+        """ 
+        super(conv_dw, self).__init__()
+        self.act_loss = 0.0
+
+        self.act1 = HoyerBiAct_multi_step(num_features=input_channel, spike_type=spike_type, x_thr_scale=x_thr_scale)
+        self.conv1 = nn.Conv2d(input_channel, input_channel, 3, stride, 1, groups=input_channel, bias = False)
+        self.bn1 = nn.BatchNorm2d(input_channel)
+        # 3x3   depth wise conv
+        self.act2 = HoyerBiAct_multi_step(num_features=input_channel, spike_type=spike_type, x_thr_scale=x_thr_scale)
+        self.conv2 = nn.Conv2d(input_channel, output_channel, 1, 1, 0, bias = False)
+        self.bn2 = nn.BatchNorm2d(output_channel)
+
+    def forward(self, inputs, timestep=1):
+        # main path
+        x = self.bn1(self.conv1(self.act1(inputs, timestep)))
+        x = self.bn2(self.conv2(self.act2(x, timestep)))
+        self.act_loss = self.act1.act_loss + self.act2.act_loss
+        return x
+
+
 if __name__ == "__main__":
     from torchvision.datasets import CIFAR10
     import torchvision.transforms as transforms
