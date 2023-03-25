@@ -259,6 +259,7 @@ class HoyerBiAct_multi_step(HoyerBiAct):
             # print('running_hoyer_thr: {}'.format(self.running_hoyer_thr))
         self.mem = self.leak*self.mem + input 
         # 
-        self.act_loss = self.hoyer_loss(input)
+        # self.act_loss = self.hoyer_loss(input)
+        self.act_loss = self.hoyer_loss(self.mem)
         out = Spike_func.apply(self.mem, hoyer_thr, self.x_thr_scale, self.spike_type, self.if_spike)
         return out

@@ -28,19 +28,19 @@
 # --description 'fixed threshold=1.0, without clamp 1.0, grad>2*thr=0.0, grad scale=1.0' --warmup 0 --lr_decay 'step' --reg_thr --log --use_hook
 
 # # multistep resnet18
-python ann.py --dataset CIFAR10 --batch_size 128 --im_size 32 --architecture resnet18_multi_steps \
---learning_rate 1e-1 --epochs 400 --lr_interval '0.50 0.70 0.85' --lr_reduce 5 --relu_threshold 1.0 \
---optimizer SGD --weight_decay 0.0001 --momentum 0.9 --amsgrad True --devices 0 --seed 0 --linear_dropout 0 --conv_dropout 0 \
---hoyer_decay 1e-8 --net_mode 'ori' --pool_pos 'before_relu' \
---spike_type 'cw' --bn_type 'bn' --loss_type 'sum' --start_spike_layer 0 --x_thr_scale 1.0 --weight_quantize 0 \
---description 'cw resnet, act loss for every x' --warmup 0 --lr_decay 'step' --reg_thr --log --use_hook --time_step 1
+# python ann.py --dataset CIFAR10 --batch_size 128 --im_size 32 --architecture resnet18_multi_steps \
+# --learning_rate 1e-1 --epochs 400 --lr_interval '0.50 0.70 0.85' --lr_reduce 5 --relu_threshold 1.0 \
+# --optimizer SGD --weight_decay 0.0001 --momentum 0.9 --amsgrad True --devices 0 --seed 0 --linear_dropout 0 --conv_dropout 0 \
+# --hoyer_decay 1e-8 --net_mode 'ori' --pool_pos 'before_relu' \
+# --spike_type 'cw' --bn_type 'bn' --loss_type 'sum' --start_spike_layer 0 --x_thr_scale 1.0 --weight_quantize 0 \
+# --description 'cw resnet, act loss for every x' --warmup 0 --lr_decay 'step' --reg_thr --log --use_hook --time_step 2
 # --pretrained_ann 'saved_models/ann_resnet18_multi_steps_cifar10_202212041432.pth'
 # saved_models/ann_resnet18_multi_steps_cifar10_202211171750.pth
 # saved_models/ann_resnet18_multi_steps_cifar10_202211191119.pth
 
-# python ann.py --dataset CIFAR10 --batch_size 256 --im_size 32 --architecture mobilenet_v1 \
-# --learning_rate 1e-4 --epochs 600 --lr_interval '0.50 0.70 0.85' --lr_reduce 5 --relu_threshold 1.0 \
-# --optimizer Adam --weight_decay 0.0001 --momentum 0.9 --amsgrad True --devices 0 --seed 0 --linear_dropout 0 --conv_dropout 0 \
-# --hoyer_decay 1e-8 --net_mode 'ori' --pool_pos 'before_relu' \
-# --spike_type 'cw' --bn_type 'bn' --loss_type 'sum' --start_spike_layer 0 --x_thr_scale 1.0 --weight_quantize 0 \
-# --description 'cw, T=1' --warmup 0 --lr_decay 'step' --reg_thr --log --use_hook --time_step 3
+python ann.py --dataset CIFAR10 --batch_size 256 --im_size 32 --architecture mobilenet_v1 \
+--learning_rate 1e-4 --epochs 600 --lr_interval '0.50 0.70 0.85' --lr_reduce 5 --relu_threshold 1.0 \
+--optimizer Adam --weight_decay 0.0001 --momentum 0.9 --amsgrad True --devices 0 --seed 0 --linear_dropout 0 --conv_dropout 0 \
+--hoyer_decay 1e-9 --net_mode 'ori' --pool_pos 'before_relu' \
+--spike_type 'cw' --bn_type 'bn' --loss_type 'sum' --start_spike_layer 0 --x_thr_scale 1.0 --weight_quantize 0 \
+--description 'cw, T=1' --warmup 0 --lr_decay 'step' --reg_thr --log --use_hook --time_step 1

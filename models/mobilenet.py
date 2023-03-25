@@ -184,7 +184,7 @@ class HoyerMobileNetV1Cifar(nn.Module):
         x_thr_scale=1.0, pooling_type='max', weight_quantize=0, im_size=224, if_set_0=False, T=1, leak=1.0):
         super(HoyerMobileNetV1Cifar, self).__init__()
         self.T = T
-        self.conv1 = nn.Conv2d(3, 32, 3, 2, 1, bias=False)
+        self.conv1 = nn.Conv2d(3, 32, 3, 1, 1, bias=False)
         self.bn1 = nn.BatchNorm2d(32)
         
         self.model = nn.Sequential(
@@ -210,14 +210,14 @@ class HoyerMobileNetV1Cifar(nn.Module):
         act_loss = 0.0
         final_out = 0.0
         for T in range(self.T):
-            prev_x = x
+            prev_x = x.clone()
             prev_x = self.bn1(self.conv1(prev_x))
             for conv_block in self.model:
                 prev_x = conv_block(prev_x, T+1)
                 act_loss += conv_block.act_loss
             prev_x = self.avgpool(prev_x)
             prev_x = prev_x.view(-1, 1024)
-            prev_X = self.fc_act(prev_x)
+            prev_x = self.fc_act(prev_x)
             final_out = final_out*self.fc_leak + self.fc(prev_x)
         return final_out, act_loss / self.T
 
